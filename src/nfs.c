@@ -89,6 +89,7 @@ main(int argc, char **argv)
 usage:
 		fprintf(stderr,
 			"Usage:\n"
+			"nfs create-file file ...\n"
 			"nfs lock [-bntx] file ...\n"
 			"nfs silly-rename file1 file2\n"
 			"nfs silly-unlink file1\n"
@@ -97,6 +98,7 @@ usage:
 			"nfs statvfs file ...\n"
 			"nfs mmap [-c size] file ...\n"
 			"nfs chmod file ...\n"
+			"nfs mknod file ...\n"
 		       );
 		return 1;
 	}
