@@ -1,0 +1,404 @@
+function __nfs_run_client {
+	testbus_run_command --host $NFS_CLIENT "$@"
+}
+
+function nfs_run_client {
+
+	if !  __nfs_run_client "$@"; then
+		testbus_test_failure
+		return 1;
+	fi
+	return 0
+}
+
+function run_client_script {
+	nfs_run_client --host $NFS_CLIENT --send-script "$@"
+}
+
+function __nfs_run_server {
+	testbus_run_command --host $NFS_SERVER "$@"
+}
+
+function nfs_run_server {
+	if ! __nfs_run_server "$@"; then
+		testbus_test_failure
+		return 1
+	fi
+	return 0
+}
+
+function nfs_server_update_hosts {
+
+	hostfile="$TESTCASE_TEMPDIR/hosts.server"
+	testbus_download_file $NFS_SERVER /etc/hosts $hostfile
+	echo "$*" >> $hostfile
+	testbus_upload_file $NFS_SERVER $hostfile /etc/hosts
+}
+
+function nfs_client_update_hosts {
+
+	hostfile="$TESTCASE_TEMPDIR/hosts.client"
+	testbus_download_file $NFS_CLIENT /etc/hosts $hostfile
+	echo "$*" >> $hostfile
+	testbus_upload_file $NFS_CLIENT $hostfile /etc/hosts
+}
+
+function nfs_server_write_exports {
+
+	testbus_upload_file $NFS_SERVER "$@" /etc/exports
+	nfs_run_server /etc/init.d/nfsserver reload
+
+	echo "exports file now:"
+	testbus_download_file $NFS_SERVER /etc/exports -
+
+	echo "visible on client side:"
+	nfs_run_client /usr/sbin/showmount -e $NFS_SERVER_IP
+}
+
+##################################################################
+# Execute a shell function for a variety of NFS versions and
+# transports.
+# Invoke as
+#   nfs_test_all_versions function_name arg1 arg2 ...
+# This will invoke function function_name repeatedly, like this:
+#   function_name arg1 arg2 ... -o mountopts
+##################################################################
+function nfs_test_with_options {
+
+	testgroup_name=$1
+	mount_options=
+	if [ -n "$2" ]; then
+		mount_options="-o $2"
+	fi
+	shift 2
+
+	testbus_group_begin $testgroup_name
+	eval $@ $mount_options
+	testbus_group_finish SUCCESS
+}
+
+function nfs_test_all_versions {
+
+	nfs_test_with_options nfsv2-tcp	vers=2,tcp "$@"
+	nfs_test_with_options nfsv2-udp	vers=2,udp "$@"
+	nfs_test_with_options nfsv3-tcp	vers=3,tcp "$@"
+	nfs_test_with_options nfsv3-udp	vers=3,udp "$@"
+	nfs_test_with_options nfsv4-tcp	vers=4     "$@"
+
+}
+
+##################################################################
+# Test NFS mounting with different options, and verify that
+# the operation succeeded/failed as expected
+##################################################################
+function nfs_mount_should_succeed {
+
+	local testname server_dir client_dir options
+
+	testname=$1
+	server_dir=$2
+	client_dir=$3
+	shift 3
+
+	options=
+	if [ -n "$*" ]; then
+		options="-o $*"
+	fi
+
+	testbus_test_begin $testname
+	if __nfs_run_client /bin/mount $NFS_SERVER_IP:$server_dir $client_dir $options; then
+		if ! __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
+			testbus_test_failure "Directory was not mounted (which is bad), but mount(8) reported success (which is even worse)"
+		else
+			testbus_test_success
+		fi
+	else
+		if __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
+			testbus_test_failure "Directory was mounted (which is good), but mount(8) reported an error"
+		else
+			testbus_test_failure "This mount attempt should have succeeded"
+		fi
+	fi
+	nfs_run_client /bin/umount $client_dir
+}
+
+function nfs_mount_should_fail {
+
+	local testname server_dir client_dir options
+
+	testname=$1
+	server_dir=$2
+	client_dir=$3
+	shift 3
+
+	options=
+	if [ -n "$*" ]; then
+		options="-o $*"
+	fi
+
+	testbus_test_begin $testname
+	if __nfs_run_client /bin/mount $NFS_SERVER_IP:$server_dir $client_dir $options; then
+		if ! __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
+			testbus_test_failure "Directory was not mounted (which is good), but mount(8) reported success"
+		else
+			testbus_test_failure "This mount attempt should have failed"
+		fi
+	else
+		if __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
+			testbus_test_failure "Directory was mounted (which is bad), even though mount(8) reported an error"
+		else
+			testbus_test_success
+		fi
+	fi
+	nfs_run_client /bin/umount $client_dir
+}
+
+##################################################################
+# Functions that help repeated testing with different options
+##################################################################
+function nfs_test_mount {
+
+	server_dir=$1
+	client_dir=$2
+	shift 2
+
+	nfs_run_client /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir "$@"
+}
+
+function nfs_test_readonly {
+
+	server_dir=$1
+	client_dir=$2
+
+	testbus_test_begin readonly
+	nfs_run_server /bin/rm -f $server_dir/readonly-test
+
+	nfs_test_mount "$@" || return 1
+
+	__nfs_run_client /bin/touch $client_dir/readonly-test &&
+		testbus_test_failure "file system should be read-only, but succeeded in creating file"
+	nfs_run_client /bin/umount $client_dir
+
+	testbus_test_success
+}
+
+function nfs_test_readwrite {
+
+	server_dir=$1
+	client_dir=$2
+
+	testbus_test_begin readwrite
+	nfs_run_server /bin/rm -f $server_dir/readwrite-test
+
+	nfs_test_mount "$@" || return 1
+
+	__nfs_run_client /bin/touch $client_dir/readwrite-test ||
+		testbus_test_failure "file system should be read-write, but was unable to create the file"
+	nfs_run_client /bin/umount $client_dir
+
+	testbus_test_success
+}
+
+function __nfs_test_rootsquash {
+
+	testname=$1; shift
+
+	server_dir=$1
+	client_dir=$2
+	squash_id=$3
+	shift 3
+
+	file=any/rootsquash-test
+
+	testbus_test_begin $testname
+	nfs_run_server /bin/mkdir -m 01777 -p $server_dir/any
+	nfs_run_server /bin/rm -f $server_dir/$file
+
+	nfs_test_mount $server_dir $client_dir "$@" || return 1
+
+	if nfs_run_client /bin/touch $client_dir/$file; then
+		owner=`__nfs_run_client /bin/stat -c %%u $client_dir/$file`
+		if [ $? -ne 0 ]; then
+			testbus_test_failure "failed to run stat command on client"
+		elif [ "$owner" -ne $squash_id ]; then
+			testbus_test_failure "file system should have root-squashing enabled. new file has owner uid=\"$owner\" (expected $squash_id)"
+		fi
+	fi
+	nfs_run_client /bin/umount $client_dir
+
+	testbus_test_success
+}
+
+function nfs_test_rootsquash {
+
+	local arg1 arg2
+
+	arg1=$1
+	arg2=$2
+	shift 2
+
+	__nfs_test_rootsquash rootsquash "$arg1" "$arg2" 65534 "$@"
+}
+
+function nfs_test_squashid {
+
+	__nfs_test_rootsquash squashid "$@"
+}
+
+function nfs_test_norootsquash {
+
+	server_dir=$1
+	client_dir=$2
+
+	testbus_test_begin norootsquash
+	nfs_run_server /bin/rm -f $server_dir/rootsquash-test
+
+	nfs_test_mount "$@" || return 1
+
+	if nfs_run_client /bin/touch $client_dir/rootsquash-test; then
+		owner=`__nfs_run_client /bin/stat -c %%u $client_dir/rootsquash-test`
+		if [ $? -ne 0 ]; then
+			testbus_test_failure "failed to run stat command on client"
+		elif [ "$owner" -ne 0 ]; then
+			testbus_test_failure "file system should have no root-squashing enabled. new file has owner uid=\"$owner\""
+		fi
+	fi
+	nfs_run_client /bin/umount $client_dir
+
+	testbus_test_success
+}
+
+function nfs_test_export_flags_setup {
+
+	nfs_server_write_exports - <<EOF
+/srv/nfs/dir1	*(ro)
+/srv/nfs/dir2	*(rw,no_root_squash)
+/srv/nfs/dir3	*(rw)
+/srv/nfs/dir4	*(rw,root_squash,anonuid=60000)
+EOF
+}
+
+function nfs_test_export_flags {
+
+	nfs_test_readonly /srv/nfs/dir1 /mnt/nfs1 "$@"
+	nfs_test_readwrite /srv/nfs/dir2 /mnt/nfs2 "$@"
+	nfs_test_norootsquash /srv/nfs/dir2 /mnt/nfs2 "$@"
+	nfs_test_rootsquash /srv/nfs/dir3 /mnt/nfs3 "$@"
+	nfs_test_squashid /srv/nfs/dir4 /mnt/nfs4 60000 "$@"
+
+}
+
+##################################################################
+# Exercise various file operations
+##################################################################
+function nfs_test_writefile {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin writefile
+	nfs_run_client /bin/dd if=/dev/zero of=$tf bs=1k count=4k
+	nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_chown {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin chown
+	nfs_run_client /bin/touch $tf
+	nfs_run_client /bin/chown --changes nobody $tf
+	nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_chmod {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin chmod
+	nfs_run_client /bin/touch $tf
+	nfs_run_client /bin/chmod --changes 0600 $tf
+	nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_sillyrename {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin sillyrename
+	nfs_run_client --send-script - $tf <<"EOF"
+#!/bin/bash
+
+tf=$1
+echo frankzappa >$tf
+
+{
+	rm -f $tf || exit 1
+
+	input=`cat`
+	if [ "$input" != "frankzappa" ]; then
+		echo "Tried to read from deleted file, but failed"
+		exit 1
+	fi
+	exit 0
+} <$tf
+
+EOF
+	testbus_test_success
+}
+
+function nfs_test_fileops_setup {
+
+	nfs_server_write_exports - <<EOF
+/srv/nfs/dir1	*(rw,no_root_squash)
+EOF
+
+}
+
+function nfs_test_fileops {
+
+	mount_options="$*"
+
+	server_dir=/srv/nfs/dir1
+	client_dir=/mnt/nfs1
+
+	if nfs_test_mount $server_dir $client_dir $mount_options; then
+		nfs_test_writefile $client_dir
+		nfs_test_chown $client_dir
+		nfs_test_chmod $client_dir
+		nfs_test_sillyrename $client_dir
+		nfs_run_client /bin/umount $client_dir
+	else
+		echo "Skipping NFS tests for this set of options" >&2
+	fi
+}
+
+function nfs_test_allfunc {
+
+	group_name=$1; shift
+	testbus_group_begin $group_name
+
+	options="$@"
+
+	server_dir=/srv/nfs/dir1
+	client_dir=/mnt/nfs1
+
+	if nfs_run_client /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir -o $options; then
+		nfs_test_writefile $client_dir
+		nfs_test_chown $client_dir
+		nfs_test_chmod $client_dir
+		nfs_test_sillyrename $client_dir
+		nfs_run_client /bin/umount $client_dir
+	else
+		echo "Skipping NFS tests for this set of options" >&2
+	fi
+
+	testbus_group_finish SUCCESS
+}
+
