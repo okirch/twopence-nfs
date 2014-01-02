@@ -12,6 +12,9 @@
 *.so.*
 *.dylib
 
+# Other
+*.swp
+
 # Executables
 *.exe
 *.out
