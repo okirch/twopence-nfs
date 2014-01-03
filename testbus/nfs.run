@@ -1,9 +1,15 @@
 #!/bin/bash
 
+basedir=${0%/*}
+
 image=$1
+if [ -z "$image" ]; then
+	echo "$0: expected image argument" >&2
+	exit 1
+fi
 
 testbus-control-kvm start server $image
 testbus-control-kvm start client $image
-/usr/share/testbus/suites/nfs
+$basedir/nfs
 testbus-control-kvm stop server
 testbus-control-kvm stop client
