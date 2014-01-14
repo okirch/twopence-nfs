@@ -122,8 +122,10 @@ nfs_mount_should_fail unexported		/srv/nfs/dir4	/mnt/nfs4
 
 # These are "exported" for the NFSv4 virtual file handle space,
 # but should these really be available to NFSv2/v3 clients as well?
-nfs_mount_should_fail nfsv4-fhspace1		/srv/nfs	/mnt/nfs4
-nfs_mount_should_fail nfsv4-fhspace2		/srv		/mnt/nfs4
+#
+# -- disabled for now. --okir, 2014-01-14
+#nfs_mount_should_fail nfsv4-fhspace1		/srv/nfs	/mnt/nfs4
+#nfs_mount_should_fail nfsv4-fhspace2		/srv		/mnt/nfs4
 testbus_group_finish SUCCESS
 
 testbus_group_finish SUCCESS
