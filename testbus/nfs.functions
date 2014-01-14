@@ -1,3 +1,4 @@
+
 function __nfs_run_client {
 	testbus_run_command --host $NFS_CLIENT "$@"
 }
@@ -291,6 +292,30 @@ function nfs_test_export_flags {
 ##################################################################
 # Exercise various file operations
 ##################################################################
+NFS_TOOL=/usr/bin/nfs
+
+function nfs_test_createfile {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin create
+	nfs_run_client $NFS_TOOL create-file $tf
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+
+	testbus_test_begin create-excl
+	# The first create with O_EXCL should succeed, the second one should fail
+	nfs_run_client $NFS_TOOL create-file -x $tf
+	if __nfs_run_client $NFS_TOOL create-file -x $tf; then
+		__nfs_run_client /bin/rm -f $tf
+		testbus_test_failure "file creation with O_EXCL succeeded, even though the file exists already"
+	else
+		__nfs_run_client /bin/rm -f $tf
+		testbus_test_success
+	fi
+}
+
 function nfs_test_writefile {
 
 	dir=$1; shift
@@ -322,34 +347,38 @@ function nfs_test_chmod {
 	testbus_test_begin chmod
 	nfs_run_client /bin/touch $tf
 	nfs_run_client /bin/chmod --changes 0600 $tf
-	nfs_run_client /bin/rm -f $tf
+	__nfs_run_client /bin/rm -f $tf
 	testbus_test_success
 }
 
-function nfs_test_sillyrename {
+function nfs_test_silly_rename {
+
+	dir=$1; shift
+	src=$dir/testfile1
+	dst=$dir/testfile2
+
+	# Open dst, rename src to dst, verify both files
+	testbus_test_begin silly-rename
+	nfs_run_client $NFS_TOOL silly-rename $src $dst
+	__nfs_run_client /bin/rm -f $src $dst
+	testbus_test_success
+
+	# Open src and dst, rename src to dst, verify both files
+	testbus_test_begin silly-rename2
+	nfs_run_client $NFS_TOOL silly-rename -x $src $dst
+	__nfs_run_client /bin/rm -f $src $dst
+	testbus_test_success
+}
+
+function nfs_test_silly_unlink {
 
 	dir=$1; shift
 	tf=$dir/testfile
 
-	testbus_test_begin sillyrename
-	nfs_run_client --send-script - $tf <<"EOF"
-#!/bin/bash
-
-tf=$1
-echo frankzappa >$tf
-
-{
-	rm -f $tf || exit 1
-
-	input=`cat`
-	if [ "$input" != "frankzappa" ]; then
-		echo "Tried to read from deleted file, but failed"
-		exit 1
-	fi
-	exit 0
-} <$tf
-
-EOF
+	# Open tf, unlink it, verify content
+	testbus_test_begin silly-unlink
+	nfs_run_client $NFS_TOOL silly-unlink $tf
+	__nfs_run_client /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -369,10 +398,12 @@ function nfs_test_fileops {
 	client_dir=/mnt/nfs1
 
 	if nfs_test_mount $server_dir $client_dir $mount_options; then
+		nfs_test_createfile $client_dir
 		nfs_test_writefile $client_dir
 		nfs_test_chown $client_dir
 		nfs_test_chmod $client_dir
-		nfs_test_sillyrename $client_dir
+		nfs_test_silly_rename $client_dir
+		nfs_test_silly_unlink $client_dir
 		nfs_run_client /bin/umount $client_dir
 	else
 		echo "Skipping NFS tests for this set of options" >&2
@@ -393,7 +424,7 @@ function nfs_test_allfunc {
 		nfs_test_writefile $client_dir
 		nfs_test_chown $client_dir
 		nfs_test_chmod $client_dir
-		nfs_test_sillyrename $client_dir
+		nfs_test_silly_rename $client_dir
 		nfs_run_client /bin/umount $client_dir
 	else
 		echo "Skipping NFS tests for this set of options" >&2
