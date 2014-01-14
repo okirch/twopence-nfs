@@ -6,7 +6,7 @@ CFLAGS	= -Wall -O2
 APPS	= nfs lock-close-open lockbench
 SCRIPTS	= testbus/nfs \
 	  testbus/nfs.functions \
-	  testbus/nfs.run
+	  testbus/nfs.conf
 
 all: $(APPS)
 
