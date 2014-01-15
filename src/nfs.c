@@ -35,6 +35,8 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <stdint.h>
 #include <signal.h>
 #include <errno.h>
@@ -48,6 +50,7 @@ struct file_data {
 
 
 static int	nfscreate(int argc, char **argv);
+static int	nfsmknod(int argc, char **argv);
 static int	nfsopen(int argc, char **argv);
 static int	nfslock(int argc, char **argv);
 static int	nfsrename(int argc, char **argv);
@@ -58,11 +61,16 @@ static int	nfsstatvfs(int argc, char **argv);
 static int	nfsmmap(int argc, char **argv);
 static int	nfschmod(int argc, char **argv);
 static int	parse_size(const char *, size_t *);
+static int	parse_device(const char *, dev_t *);
 
 static void	init_file(struct file_data *data, const char *name, size_t filesize);
 static int	generate_file(struct file_data *data, const char *name, size_t filesize);
 static int	__generate_file(struct file_data *data, int fd);
 static int	verify_file(const char *ident, int fd, const struct file_data *data);
+static int	verify_file_stat(const char *pathname, int format, dev_t dev, mode_t permissions);
+static int	make_socket(const char *, mode_t mode);
+static int	make_fifo(const char *, mode_t);
+static int	make_device(const char *, mode_t, dev_t);
 
 static int	opt_quiet = 0;
 
@@ -90,6 +98,7 @@ usage:
 		fprintf(stderr,
 			"Usage:\n"
 			"nfs create-file file ...\n"
+			"nfs create-special path ...\n"
 			"nfs lock [-bntx] file ...\n"
 			"nfs silly-rename file1 file2\n"
 			"nfs silly-unlink file1\n"
@@ -106,6 +115,9 @@ usage:
 
 	if (!strcmp(argv[0], "create-file")) {
 		res = nfscreate(argc, argv);
+	} else
+	if (!strcmp(argv[0], "create-special")) {
+		res = nfsmknod(argc, argv);
 	} else
 	if (!strcmp(argv[0], "lock")) {
 		res = nfslock(argc, argv);
@@ -186,6 +198,125 @@ nfscreate(int argc, char **argv)
 		if (__generate_file(&fdata, fd) < 0)
 			return 1;
 		close(fd);
+	}
+	return 0;
+}
+
+int
+nfsmknod(int argc, char **argv)
+{
+	enum {
+		TYPE_SOCKET, TYPE_FIFO, TYPE_BLKDEV, TYPE_CHRDEV,
+		__TYPE_MAX
+	};
+	int	opt_type = TYPE_SOCKET;
+	int	opt_mode = -1;
+	int	opt_remove = 0;
+	dev_t	opt_device = 0;
+	int	c;
+	int	rv = 0;
+
+	while ((c = getopt(argc, argv, "d:m:rt:")) != -1) {
+		switch (c) {
+		case 'd':
+			if (!parse_device(optarg, &opt_device)) {
+				fprintf(stderr, "cannot parse device major:minor \"%s\"\n", optarg);
+				return 1;
+			}
+			break;
+
+		case 'm':
+			opt_mode = strtol(optarg, NULL, 0);
+			if (opt_mode & ~0777) {
+				fprintf(stderr, "bad permissions in -m option: 0%o\n", opt_mode);
+				return 1;
+			}
+			break;
+
+		case 'r':
+			opt_remove = 1;
+			break;
+
+		case 't':
+			if (!strcasecmp(optarg, "socket"))
+				opt_type = TYPE_SOCKET;
+			else if (!strcasecmp(optarg, "fifo"))
+				opt_type = TYPE_FIFO;
+			else if (!strcasecmp(optarg, "blkdev"))
+				opt_type = TYPE_BLKDEV;
+			else if (!strcasecmp(optarg, "chrdev"))
+				opt_type = TYPE_CHRDEV;
+			else {
+				fprintf(stderr, "Unknown special file type\n");
+				return 1;
+			}
+			break;
+
+		default:
+			fprintf(stderr, "Invalid option\n");
+			return 1;
+		}
+	}
+
+	if (opt_type == TYPE_BLKDEV || opt_type == TYPE_CHRDEV) {
+		if (opt_device == 0) {
+			fprintf(stderr, "Block and char devices need a -d major:minor option\n");
+			return 1;
+		}
+	}
+
+	if (optind == argc) {
+		fprintf(stderr, "need file name(s)\n");
+		return 1;
+	}
+
+	if (opt_mode < 0) {
+		umask(~(opt_mode & 0777));
+	} else {
+		mode_t mask;
+
+		mask = umask(0);
+		opt_mode = ~mask & 0777;
+	}
+
+	while (optind < argc) {
+		const char *pathname = argv[optind++];
+		int format, mode = opt_mode;
+		int okay = 0;
+
+		if (opt_remove)
+			unlink(pathname);
+
+		switch (opt_type) {
+		case TYPE_SOCKET:
+			format = S_IFSOCK;
+			okay = make_socket(pathname, mode);
+			break;
+
+		case TYPE_FIFO:
+			format = S_IFIFO;
+			okay = make_fifo(pathname, mode);
+			break;
+
+		case TYPE_BLKDEV:
+			format = S_IFBLK;
+			okay = make_device(pathname, format | mode, opt_device);
+			break;
+
+		case TYPE_CHRDEV:
+			format = S_IFCHR;
+			okay = make_device(pathname, format | mode, opt_device);
+			break;
+
+		default:
+			fprintf(stderr, "Special file type not implemented\n");
+			return 1;
+		}
+
+		if (okay)
+			okay = verify_file_stat(pathname, format, opt_device, mode);
+
+		rv |= !okay;
 	}
 	return 0;
 }
@@ -1017,6 +1148,30 @@ failed:
 	return 0;
 }
 
+int
+parse_device(const char *input, dev_t *dev)
+{
+	unsigned int major, minor;
+	const char *pos = input;
+
+	if (!isdigit(*pos))
+		return 0;
+	major = strtoul(pos, (char **) &pos, 0);
+	if (!ispunct(*pos))
+		return 0;
+	++pos;
+
+	if (!isdigit(*pos))
+		return 0;
+
+	minor = strtoul(pos, (char **) &pos, 0);
+	if (*pos != '\0')
+		return 0;
+
+	*dev = makedev(major, minor);
+	return 1;
+}
+
 static unsigned int
 generate_buffer(const struct file_data *data, unsigned long offset, unsigned char *buffer, unsigned int count)
 {
@@ -1161,3 +1316,137 @@ verify_file(const char *ident, int fd, const struct file_data *data)
 	return 1;
 }
 
+static const char *
+file_format(int format)
+{
+	switch (format) {
+	case S_IFSOCK:
+		return "socket";
+	case S_IFLNK:
+		return "symbolic link";
+	case S_IFREG:
+		return "regular file";
+	case S_IFBLK:
+		return "block device";
+	case S_IFDIR:
+		return "directory";
+	case S_IFCHR:
+		return "character device";
+	case S_IFIFO:
+		return "fifo";
+	}
+
+	return "unknown";
+}
+
+int
+verify_file_stat(const char *pathname, int format, dev_t dev, mode_t permissions)
+{
+	static const unsigned int perm_mask = S_IRWXU | S_IRWXG | S_IRWXO | S_ISUID | S_ISGID | S_ISVTX;
+	struct stat stb;
+
+	if (lstat(pathname, &stb) < 0) {
+		fprintf(stderr, "cannot stat %s: %m\n",pathname);
+		return 0;
+	}
+
+	if ((stb.st_mode & S_IFMT) != format) {
+		fprintf(stderr, "%s is a %s (should be a %s)\n", pathname,
+				file_format(stb.st_mode & S_IFMT),
+				file_format(format));
+		return 0;
+	}
+
+	if (S_ISBLK(stb.st_mode) || S_ISCHR(stb.st_mode)) {
+		if (stb.st_rdev != dev) {
+			fprintf(stderr, "%s device has major/minor %u/%u",
+					pathname,
+					gnu_dev_major(stb.st_rdev), gnu_dev_minor(stb.st_rdev));
+			fprintf(stderr, " - expected %u/%u\n",
+					gnu_dev_major(dev), gnu_dev_minor(dev));
+			return 0;
+		}
+	}
+
+	if (permissions >= 0) {
+		int found_perms = stb.st_mode & perm_mask;
+
+		if (permissions & ~perm_mask) {
+			static int warned = 0;
+
+			if (!warned++)
+				fprintf(stderr, "Odd permission bits 0%o, fixing up\n", permissions);
+			permissions &= perm_mask;
+		}
+
+		if (found_perms != permissions) {
+			fprintf(stderr, "%s has permissions 0%o - expected 0%o\n",
+					pathname, found_perms, permissions);
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+/*
+ * Create a unix socket
+ */
+int
+make_socket(const char *pathname, mode_t mode)
+{
+	struct sockaddr_un sun;
+	socklen_t alen;
+	mode_t old_mask;
+	int fd, rv = 1;
+
+	memset(&sun, 0, sizeof(sun));
+	sun.sun_family = AF_LOCAL;
+	strcpy(sun.sun_path, pathname);
+	alen = SUN_LEN(&sun);
+
+	fd = socket(PF_LOCAL, SOCK_STREAM, 0);
+	if (fd < 0) {
+		fprintf(stderr, "Unable to create PF_LOCAL socket\n");
+		return 0;
+	}
+
+	old_mask = umask(~mode & 0777);
+
+	if (bind(fd, (struct sockaddr *) &sun, alen) < 0) {
+		fprintf(stderr, "cannot bind socket to %s: %m", pathname);
+		rv = 0;
+	}
+
+	umask(old_mask);
+	close(fd);
+	return rv;
+}
+
+/*
+ * Create a FIFO
+ */
+int
+make_fifo(const char *pathname, mode_t mode)
+{
+	if (mkfifo(pathname, mode) < 0) {
+		fprintf(stderr, "cannot create FIFO %s: %m\n", pathname);
+		return 0;
+	}
+
+	return 1;
+}
+
+/*
+ * Create a device
+ */
+int
+make_device(const char *pathname, mode_t mode, dev_t dev)
+{
+	if (mknod(pathname, mode, dev) < 0) {
+		fprintf(stderr, "cannot create device %s: %m\n", pathname);
+		return 0;
+	}
+
+	return 1;
+}
