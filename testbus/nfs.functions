@@ -13,7 +13,7 @@ function nfs_run_client {
 }
 
 function run_client_script {
-	nfs_run_client --host $NFS_CLIENT --send-script "$@"
+	nfs_run_client --send-script "$@"
 }
 
 function __nfs_run_server {
@@ -28,22 +28,51 @@ function nfs_run_server {
 	return 0
 }
 
-function nfs_server_update_hosts {
-
-	hostfile="$TESTCASE_TEMPDIR/hosts.server"
-	testbus_download_file $NFS_SERVER /etc/hosts $hostfile
-	echo "$*" >> $hostfile
-	testbus_upload_file $NFS_SERVER $hostfile /etc/hosts
+function __nfs_run_second {
+	testbus_run_command --host $NFS_SECOND "$@"
 }
 
-function nfs_client_update_hosts {
+function nfs_run_second {
 
-	hostfile="$TESTCASE_TEMPDIR/hosts.client"
-	testbus_download_file $NFS_CLIENT /etc/hosts $hostfile
-	echo "$*" >> $hostfile
-	testbus_upload_file $NFS_CLIENT $hostfile /etc/hosts
+	if !  __nfs_run_second "$@"; then
+		testbus_test_failure
+		return 1;
+	fi
+	return 0
 }
 
+function run_second_script {
+	nfs_run_client --host $NFS_SECOND --send-script "$@"
+}
+
+##################################################################
+# Add one or more lines to /etc/hosts on one of the nodes.
+# Usage:
+#   nfs_update_hosts $host_handle <<-EOF
+#	...
+#   EOF
+##################################################################
+function nfs_update_hosts {
+
+	local hh
+
+	hh=$1; shift
+
+	hostfile="$TESTCASE_TEMPDIR/hosts.tmp"
+	testbus_download_file $hh /etc/hosts $hostfile
+	cat >> $hostfile
+	testbus_upload_file $hh $hostfile /etc/hosts
+}
+
+##################################################################
+# Replace the exports file on the server with new data, and
+# ask the server to reload it.
+#
+# Usage:
+#   nfs_server_write_exports <<-EOF
+#	...
+#   EOF
+##################################################################
 function nfs_server_write_exports {
 
 	testbus_upload_file $NFS_SERVER "$@" /etc/exports
@@ -54,6 +83,44 @@ function nfs_server_write_exports {
 
 	echo "visible on client side:"
 	nfs_run_client /usr/sbin/showmount -e $NFS_SERVER_IP
+}
+
+##################################################################
+# Initialize an NFS client node
+# Usage:
+#   nfs_init_client $host_handle
+##################################################################
+function nfs_init_client {
+
+	local hh
+
+	hh=$1; shift
+
+	nfs_update_hosts $hh <<-EOF
+	$NFS_SERVER_IP	$NFS_SERVER_NAME nfs-server.testbus.opensuse.org
+	EOF
+
+	if ! testbus_run_command --host $hh /usr/sbin/showmount -e nfs-server.testbus.opensuse.org; then
+		testbus_test_failure "Unable to contact NFS server"
+		return 1
+	fi
+
+	if ! testbus_run_command --host $hh /bin/mkdir -p /mnt/nfs{1,2,3,4}; then
+		testbus_test_failure "Failed to set up NFS mount points"
+		return 1;
+	fi
+
+	# There's an icky issue with systemd and inssrv, which causes
+	# rpcbind not to be enabled automatically when you enable NFS
+	testbus_run_command --host $hh /sbin/rpcbind || true
+
+	# A simple start is not enough to make it start all helper services
+	if ! testbus_run_command --host $hh /etc/init.d/nfs force-start; then
+		testbus_test_failure "NFS start script exited with error"
+		return 1;
+	fi
+
+	return 0
 }
 
 ##################################################################
@@ -382,6 +449,104 @@ function nfs_test_silly_unlink {
 	testbus_test_success
 }
 
+function nfs_test_socket {
+
+	dir=$1; shift
+	tf=$dir/mysock
+
+	testbus_test_begin socket
+	nfs_run_client $NFS_TOOL create-special -t socket $tf -m 0644
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_fifo {
+
+	dir=$1; shift
+	tf=$dir/myfifo
+
+	testbus_test_begin fifo
+	nfs_run_client $NFS_TOOL create-special -t fifo $tf -m 0644
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_chrdev {
+
+	dir=$1; shift
+	tf=$dir/devnull
+
+	testbus_test_begin chrdev
+	nfs_run_client $NFS_TOOL create-special -t chrdev $tf -m 0644 -d 1:3
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_blkdev {
+
+	dir=$1; shift
+	tf=$dir/devloop
+
+	testbus_test_begin blkdev
+	nfs_run_client $NFS_TOOL create-special -t blkdev $tf -m 0600 -d 7:0
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_hardlink {
+
+	dir=$1; shift
+	link=$dir/imahardlink
+	target=$dir/testfile
+	basename=${target##*/}
+
+	testbus_test_begin hardlink
+	nfs_run_client --send-stdin /bin/bash <<-EOF
+		echo imadoofus >$target
+	EOF
+	nfs_run_client /bin/ln $target $link
+	content=`nfs_run_client /bin/cat $link`
+
+	if [ "$content" != "imadoofus" ]; then
+		testbus_test_failure "Problem reading hardlink"
+	else
+		testbus_trace "Trying to create the same hardlink twice is supposed to produce an error"
+		if __nfs_run_client /bin/ln $target $link; then
+			testbus_test_failure "recreating an existing hardlink did not fail"
+		fi
+	fi
+
+	__nfs_run_client /bin/rm -f $target $link
+	testbus_test_success
+}
+
+function nfs_test_symlink {
+
+	dir=$1; shift
+	link=$dir/imasymlink
+	target=$dir/testfile
+	basename=${target##*/}
+
+	testbus_test_begin symlink
+	nfs_run_client --send-stdin /bin/bash <<-EOF
+		echo imadoofus >$target
+	EOF
+	nfs_run_client /bin/ln -s $basename $link
+	content=`nfs_run_client /bin/cat $link`
+
+	if [ "$content" != "imadoofus" ]; then
+		testbus_test_failure "Problem reading symlink"
+	else
+		testbus_trace "Trying to create the same symlink twice is supposed to produce an error"
+		if __nfs_run_client /bin/ln -s $basename $link; then
+			testbus_test_failure "/bin/ln -s on an existing symlink did not fail"
+		fi
+	fi
+
+	__nfs_run_client /bin/rm -f $target $link
+	testbus_test_success
+}
+
 function nfs_test_fileops_setup {
 
 	nfs_server_write_exports - <<EOF
@@ -404,10 +569,125 @@ function nfs_test_fileops {
 		nfs_test_chmod $client_dir
 		nfs_test_silly_rename $client_dir
 		nfs_test_silly_unlink $client_dir
+		nfs_test_socket $client_dir
+		nfs_test_fifo $client_dir
+		nfs_test_chrdev $client_dir
+		nfs_test_blkdev $client_dir
+		nfs_test_symlink $client_dir
+		nfs_test_hardlink $client_dir
 		nfs_run_client /bin/umount $client_dir
 	else
 		echo "Skipping NFS tests for this set of options" >&2
 	fi
+}
+
+##################################################################
+# Ensure that file attributes are validated when reopening a
+# file (also called close-to-open (cto) consistency
+##################################################################
+function nfs_test_cto {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin cto
+
+	# On client1, write "frank" to the testfile
+	nfs_run_client --send-stdin /bin/bash <<-EOF
+		echo -n frank >$tf
+	EOF
+
+	before=`nfs_run_client /bin/cat $tf`
+
+	# On the *other* client, write "zappa" to the testfile
+	nfs_run_second --send-stdin /bin/bash <<-EOF
+		echo zappa >>$tf
+	EOF
+
+	# Expect the *first* client to revalidate attrs when reopening
+	# the file, and discard its cache. IOW the current file content, 
+	# which is "frankzappa", should be visible on the first client,
+	# too.
+	after=`nfs_run_client /bin/cat $tf`
+
+	if [ "$before" = "frank" -a "$after" = "frankzappa" ]; then
+		testbus_test_success
+	else
+		testbus_trace "before=$before (should be frank)"
+		testbus_trace "after=$after (should be frankzappa)"
+		testbus_trace "File attributes (1st client):"
+		nfs_run_client /usr/bin/stat $tf
+		testbus_trace "File attributes (2nd client):"
+		nfs_run_second /usr/bin/stat $tf
+		testbus_test_failure
+	fi
+
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+##################################################################
+# Test mmap/lock coherence behavior
+##################################################################
+function nfs_test_mmap_coherence {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin mmap-coherence
+
+	# On client1, start the mmap challenger
+	# FIXME: there should be another way to run a command in the background
+	__nfs_run_client $NFS_TOOL mmap2 -c 16 $tf &
+
+	# On client2, start the responder
+	if ! __nfs_run_second $NFS_TOOL mmap2 -r -c 16 $tf; then
+		testbus_test_failure
+	fi
+
+	# wait for challenger
+	if ! wait; then
+		testbus_test_failure "challenger exited with error"
+	fi
+
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+##################################################################
+# Test close-to-open consistency and some mmap/msync semantics
+# between two hosts
+##################################################################
+function nfs_test_coherence_setup {
+
+	nfs_server_write_exports - <<EOF
+/srv/nfs/dir1	*(rw,no_root_squash)
+EOF
+}
+
+function nfs_test_coherence {
+
+	mount_options="$*"
+
+	server_dir=/srv/nfs/dir1
+	client_dir=/mnt/nfs1
+
+	testbus_test_begin mount
+	if ! nfs_run_client /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
+		echo "Skipping NFS tests for this set of options" >&2
+		return
+	fi
+	if ! nfs_run_second /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
+		echo "Skipping NFS tests for this set of options" >&2
+		return
+	fi
+
+	nfs_test_cto $client_dir
+
+	testbus_test_begin unmount
+	nfs_run_client /bin/umount $client_dir
+	nfs_run_second /bin/umount $client_dir
+	testbus_test_success
 }
 
 function nfs_test_allfunc {

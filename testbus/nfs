@@ -36,16 +36,22 @@ test -n "$NFS_SERVER" || testbus_exit_fail "unable to claim NFS server"
 NFS_CLIENT=`testbus_claim_host --role client`
 test -n "$NFS_CLIENT" || testbus_exit_fail "unable to claim NFS client"
 
+NFS_SECOND=`testbus_claim_host --role client2`
+test -n "$NFS_SECOND" || testbus_exit_fail "unable to claim second NFS client"
+
 NFS_SERVER_IP=`testbus_getenv_nonempty $NFS_SERVER primary_ip`
 NFS_CLIENT_IP=`testbus_getenv_nonempty $NFS_CLIENT primary_ip`
+NFS_SECOND_IP=`testbus_getenv_nonempty $NFS_SECOND primary_ip`
 
 NFS_SERVER_NAME=`testbus_getenv_nonempty $NFS_SERVER hostname`
 NFS_CLIENT_NAME=`testbus_getenv_nonempty $NFS_CLIENT hostname`
+NFS_SECOND_NAME=`testbus_getenv_nonempty $NFS_SECOND hostname`
 
 cat <<EOF
 Claimed hosts
 Server:  $NFS_SERVER_NAME ($NFS_SERVER_IP)
 Client:  $NFS_CLIENT_NAME ($NFS_CLIENT_IP)
+Client:  $NFS_SECOND_NAME ($NFS_SECOND_IP)
 EOF
 
 ##################################################################
@@ -71,23 +77,17 @@ else
 	nfs_run_server /sbin/chkconfig nfsserver on
 fi
 
-nfs_server_update_hosts "$NFS_CLIENT_IP	$NFS_CLIENT_NAME nfs-client.testbus.opensuse.org"
+nfs_update_hosts $NFS_SERVER <<-EOF
+	$NFS_CLIENT_IP $NFS_CLIENT_NAME nfs-client.testbus.opensuse.org
+EOF
 
 ##################################################################
 # Initialize NFS server
 ##################################################################
 testbus_test_begin client-init
 
-nfs_client_update_hosts "$NFS_SERVER_IP	$NFS_SERVER_NAME nfs-server.testbus.opensuse.org"
-nfs_run_client /usr/sbin/showmount -e nfs-server.testbus.opensuse.org
-
-nfs_run_client /bin/mkdir -p /mnt/nfs{1,2,3,4}
-
-# This is icky:
-__nfs_run_client /sbin/rpcbind || true
-
-# A simple start is not enough to make it start all helper services
-nfs_run_client /etc/init.d/nfs force-start
+nfs_init_client $NFS_CLIENT
+nfs_init_client $NFS_SECOND
 
 testbus_test_success
 
@@ -186,6 +186,21 @@ testbus_group_begin fileops
 
 nfs_test_fileops_setup
 nfs_test_all_versions nfs_test_fileops
+
+testbus_group_finish SUCCESS
+
+##################################################################
+# Try some basic consistency tests when coming from two different
+# clients
+##################################################################
+testbus_group_begin cto
+
+nfs_server_write_exports - <<EOF
+/srv/nfs/dir1	*(rw)
+EOF
+
+nfs_test_coherence_setup
+nfs_test_all_versions nfs_test_coherence
 
 testbus_group_finish SUCCESS
 
