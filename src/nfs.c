@@ -1168,6 +1168,23 @@ mmap2_lock_record(int fd, unsigned int slot)
 }
 
 static int
+mmap2_is_record_locked(int fd, unsigned int slot)
+{
+	struct flock fl;
+
+	memset(&fl, 0, sizeof(fl));
+//	fl.l_type = F_UNLCK;
+//	fl.l_whence = SEEK_SET;
+	fl.l_start = slot * MMAP2_RECORD_SIZE;
+	fl.l_len = MMAP2_RECORD_SIZE;
+	if (fcntl(fd, F_GETLK, &fl) < 0) {
+		fprintf(stderr, "fcntl(F_GETLK): %m\n");
+		return 0;
+	}
+	return (fl.l_type != F_UNLCK);
+}
+
+static int
 mmap2_unlock_record(int fd, unsigned int slot)
 {
 	return __mmap2_lock_record(fd, slot, F_UNLCK);
@@ -1260,41 +1277,50 @@ nfsmmap2(int argc, char **argv)
 	}
 
 	if (opt_responder) {
-		unsigned int index = 0;
+		unsigned int index = 0, next;
 
 		/* Responder algorithm:
-		 *  - writelock slot N
-		 *  - copy challenge to response field
-		 *  - unlock
-		 *  - pick next slot
+		 *  - start at slot 1
+		 *  - writelock current slot
+		 *  loop:
+		 *    - copy challenge to response field
+		 *    - pick next slot and lock
+		 *    - unlock current slot
+		 *    - make next slot the current one
 		 */
+
+		if (mmap2_lock_record(fd, index) < 0)
+			goto out;
 		while (opt_iterations--) {
 			struct mmap2_record *record = mmap2_record(addr, index);
 
-			/* Locking should re-validate this record */
-			if (mmap2_lock_record(fd, index) < 0)
-				goto out;
-
 			/* Update the response */
 			record->response = record->challenge;
+			write(2, "o", 1);
+
+			next = (index + 1) % opt_count;
+			if (mmap2_lock_record(fd, next) < 0)
+				goto out;
 
 			/* Unlocking should flush out all changes */
 			mmap2_unlock_record(fd, index);
-
-			index = (index + 1) % opt_count;
+			index = next;
 		}
+
+		mmap2_unlock_record(fd, index);
 	} else {
-		unsigned int index = 0, next;
+		unsigned int index = 1, prev = 0, next;
 
 		memset(addr, 0, mem_size);
 
 		/* Challenger algorithm:
-		 *  - writelock current slot N
+		 *  - start at slot 1
+		 *  - writelock current slot
 		 *  loop:
-		 *    - writelock slot N + 1
 		 *    - verify that current.response == current.challenge
-		 *       if not: unlock, sleep, re-lock, repeat check
 		 *    - increment current.challenge
+		 *    - wait until the responder has locked the previous slot
+		 *    - writelock slot N + 1
 		 *    - unlock current slot
 		 *    - make slot N + 1 the current one
 		 */
@@ -1302,6 +1328,24 @@ nfsmmap2(int argc, char **argv)
 			goto out;
 		while (opt_iterations--) {
 			struct mmap2_record *current = mmap2_record(addr, index);
+
+			if (current->response != current->challenge) {
+				fprintf(stderr, "Bad record %u, challenge=%u, response=%u",
+						index, current->challenge, current->response);
+				goto out;
+			}
+
+			current->challenge++;
+			if (opt_sync)
+				msync(current, MMAP2_RECORD_SIZE, MS_SYNC);
+			write(2, "+", 1);
+
+			/* Wait for the responder to lock the previous record,
+			 * then proceed. */
+			while (!mmap2_is_record_locked(fd, prev)) {
+				write(2, ".", 1);
+				usleep(opt_wait_ms * 1000);
+			}
 
 			/* Locking the next record here does two things:
 			 *  a) it prevents the responder from overtaking us
@@ -1315,30 +1359,18 @@ nfsmmap2(int argc, char **argv)
 			if (mmap2_lock_record(fd, next) < 0)
 				goto out;
 
-			while (current->response != current->challenge) {
-				mmap2_unlock_record(fd, index);
-				write(2, ".", 1);
-				usleep(opt_wait_ms * 1000);
-				if (mmap2_lock_record(fd, index) < 0)
-					goto out;
-			}
-
-			write(2, "+", 1);
-			current->challenge++;
-
-			if (opt_sync)
-				msync(current, MMAP2_RECORD_SIZE, MS_SYNC);
 			mmap2_unlock_record(fd, index);
 
+			prev = index;
 			index = next;
 		}
-
-		write(2, "\n", 1);
 	}
 
 	res = 0;
 
-out:	if (res)
+out:	
+	write(2, "\n", 1);
+	if (res)
 		perror(name);
 	if (addr)
 		munmap(addr, mem_size);
