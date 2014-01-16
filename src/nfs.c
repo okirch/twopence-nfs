@@ -59,6 +59,7 @@ static int	nfsstat(int argc, char **argv);
 static int	nfsstatfs(int argc, char **argv);
 static int	nfsstatvfs(int argc, char **argv);
 static int	nfsmmap(int argc, char **argv);
+static int	nfsmmap2(int argc, char **argv);
 static int	nfschmod(int argc, char **argv);
 static int	parse_size(const char *, size_t *);
 static int	parse_device(const char *, dev_t *);
@@ -106,6 +107,7 @@ usage:
 			"nfs statfs file ...\n"
 			"nfs statvfs file ...\n"
 			"nfs mmap [-c size] file ...\n"
+			"nfs mmap2 file\n"
 			"nfs chmod file ...\n"
 			"nfs mknod file ...\n"
 		       );
@@ -142,6 +144,9 @@ usage:
 	} else
 	if (!strcmp(argv[0], "mmap")) {
 		res = nfsmmap(argc, argv);
+	} else
+	if (!strcmp(argv[0], "mmap2")) {
+		res = nfsmmap2(argc, argv);
 	} else
 	if (!strcmp(argv[0], "chmod")) {
 		res = nfschmod(argc, argv);
@@ -1081,6 +1086,200 @@ out:	if (res)
 		perror(name);
 	if (addr)
 		munmap(addr, count);
+	if (fd >= 0)
+		close(fd);
+
+	return res;
+}
+
+/*
+ * nfs mmap validation
+ *
+ * This needs more work, especially for the multi-client scenario where we wish to
+ * verify data consistency.
+ */
+struct mmap2_record {
+	uint32_t	challenge;
+	uint32_t	response;
+};
+
+#define MMAP2_RECORD_SIZE	sizeof(struct mmap2_record)
+
+static int
+__mmap2_lock_record(int fd, unsigned int slot, int type)
+{
+	struct flock fl;
+
+	fl.l_type = type;
+	fl.l_whence = SEEK_SET;
+	fl.l_start = slot * MMAP2_RECORD_SIZE;
+	fl.l_len = MMAP2_RECORD_SIZE;
+	if (fcntl(fd, F_SETLKW, &fl) < 0) {
+		fprintf(stderr, "fcntl(F_SETLKW, %u): %m\n", type);
+		return -1;
+	}
+	return 0;
+}
+
+static int
+mmap2_lock_record(int fd, unsigned int slot)
+{
+	return __mmap2_lock_record(fd, slot, F_WRLCK);
+}
+
+static int
+mmap2_unlock_record(int fd, unsigned int slot)
+{
+	return __mmap2_lock_record(fd, slot, F_UNLCK);
+}
+
+static struct mmap2_record *
+mmap2_record(unsigned char *base_addr, unsigned int slot)
+{
+	return ((struct mmap2_record *) base_addr) + slot;
+}
+
+/*
+ * This test case verifies several things at once
+ *  - mmap consistency
+ *  - coherence when using posix locks
+ *  - lock block/grant behavior
+ */
+int
+nfsmmap2(int argc, char **argv)
+{
+	unsigned int 	opt_count = 0;
+	unsigned int	opt_iterations = 128;
+	int		opt_responder = 0;
+	int		opt_sync = 0;
+	int		c, fd, res = 1;
+	unsigned char	*addr = NULL;
+	char		*name;
+	size_t		mem_size;
+
+	while ((c = getopt(argc, argv, "c:i:rs")) != -1) {
+		switch (c) {
+		case 'c':
+			opt_count = atoi(optarg);
+			break;
+		case 'i':
+			opt_iterations = atoi(optarg);
+			break;
+		case 'r':
+			opt_responder = 1;
+			break;
+		case 's':
+			opt_sync = 1;
+			break;
+		default:
+			fprintf(stderr, "Invalid option\n");
+			return 1;
+		}
+	}
+
+	if (optind != argc - 1) {
+		fprintf(stderr, "missing file name\n");
+		return 1;
+	}
+
+	name = argv[optind];
+
+	if (opt_count <= 2)
+		opt_count = 2;
+	mem_size = opt_count * MMAP2_RECORD_SIZE;
+
+	if ((fd = open(name, O_RDWR|O_CREAT, 0644)) < 0)
+		goto out;
+
+	ftruncate(fd, mem_size);
+
+	addr = mmap(NULL, mem_size, PROT_WRITE|PROT_READ, MAP_SHARED, fd, 0);
+	if (addr == MAP_FAILED)
+		goto out;
+
+	if (opt_responder) {
+		unsigned int index = 0;
+
+		/* Responder algorithm:
+		 *  - writelock slot N
+		 *  - copy challenge to response field
+		 *  - unlock
+		 *  - pick next slot
+		 */
+		while (opt_iterations--) {
+			struct mmap2_record *record = mmap2_record(addr, index);
+
+			/* Locking should re-validate this record */
+			if (mmap2_lock_record(fd, index) < 0)
+				goto out;
+
+			/* Update the response */
+			record->response = record->challenge;
+
+			/* Unlocking should flush out all changes */
+			mmap2_unlock_record(fd, index);
+
+			index = (index + 1) % opt_count;
+		}
+	} else {
+		unsigned int index = 0, next;
+
+		memset(addr, 0, mem_size);
+
+		/* Challenger algorithm:
+		 *  - writelock current slot N
+		 *  loop:
+		 *    - writelock slot N + 1
+		 *    - verify that current.response == current.challenge
+		 *       if not: unlock, sleep, re-lock, repeat check
+		 *    - increment current.challenge
+		 *    - unlock current slot
+		 *    - make slot N + 1 the current one
+		 */
+		if (mmap2_lock_record(fd, index) < 0)
+			goto out;
+		while (opt_iterations--) {
+			struct mmap2_record *current = mmap2_record(addr, index);
+
+			/* Locking the next record here does two things*
+			 *  a) it prevents the responder from overtaking us
+			 *  b) it causes the responder to block on its attempt
+			 *     to lock that record.
+			 *     When we unlock the record subsequently, the
+			 *     responder should be woken up and be given a chance
+			 *     to claim the lock
+			 */
+			next = (index + 1) % opt_count;
+			if (mmap2_lock_record(fd, next) < 0)
+				goto out;
+
+			while (current->response != current->challenge) {
+				mmap2_unlock_record(fd, index);
+				write(2, ".", 1);
+				usleep(100000);
+				if (mmap2_lock_record(fd, index) < 0)
+					goto out;
+			}
+
+			write(2, "+", 1);
+			current->challenge++;
+
+			if (opt_sync)
+				msync(current, MMAP2_RECORD_SIZE, MS_SYNC);
+			mmap2_unlock_record(fd, index);
+
+			index = next;
+		}
+
+		write(2, "\n", 1);
+	}
+
+	res = 0;
+
+out:	if (res)
+		perror(name);
+	if (addr)
+		munmap(addr, mem_size);
 	if (fd >= 0)
 		close(fd);
 
