@@ -61,6 +61,10 @@ testbus_test_begin server-init
 
 testbus_trace "server: setting up NFS server"
 
+testbus_upload_file $NFS_SERVER - /etc/modprobe.d/90-testbus-nfs.conf <<-EOF
+	options lockd nlm_grace_period=10
+EOF
+
 # I would have loved to use yast2 for this, but right now it always
 # wants _at least_ a pipe on stdout, preferably a tty. If you make it
 # write to anything else, it'll just die quietly.
@@ -76,6 +80,9 @@ else
 	nfs_run_server /etc/init.d/nfsserver start
 	nfs_run_server /sbin/chkconfig nfsserver on
 fi
+
+testbus_trace "NLM grace period reported on the server"
+testbus_download_file $NFS_SERVER /etc/modprobe.d/90-testbus-nfs.conf -
 
 nfs_update_hosts $NFS_SERVER <<-EOF
 	$NFS_CLIENT_IP $NFS_CLIENT_NAME nfs-client.testbus.opensuse.org
@@ -190,10 +197,24 @@ nfs_test_all_versions nfs_test_fileops
 testbus_group_finish SUCCESS
 
 ##################################################################
+# Try some basic file locking tests
+##################################################################
+testbus_group_begin locking
+
+
+nfs_test_locking_setup
+nfs_test_all_versions nfs_test_locking
+
+testbus_group_finish
+
+##################################################################
 # Try some basic consistency tests when coming from two different
 # clients
 ##################################################################
 testbus_group_begin cto
+
+testbus_trace "Making sure grace period has expired"
+sleep 10
 
 nfs_server_write_exports - <<EOF
 /srv/nfs/dir1	*(rw)

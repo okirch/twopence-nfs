@@ -582,6 +582,200 @@ function nfs_test_fileops {
 }
 
 ##################################################################
+# Simple file locking tests
+##################################################################
+function nfs_test_posix_lock1 {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin posix-lock
+	testbus_trace "Grab a shared POSIX lock"
+	nfs_run_client $NFS_TOOL lock -t 1 $tf
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_posix_lock2 {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin posix-lock2
+	testbus_trace "Grab an exclusive POSIX lock"
+	nfs_run_client $NFS_TOOL lock -t 1 -x $tf
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_posix_lock3 {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin posix-lock3
+	testbus_trace "Lock and unlock, then make sure GETLK reports no more lock"
+	nfs_run_client $NFS_TOOL lock -t 1 -u $tf
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_posix_lock4 {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin posix-lock4
+	testbus_trace "Grab a sequence of adjacent lock, then do an unlock on the whole range. Verify the lock is gone."
+	nfs_run_client $NFS_TOOL lock -t 1 -s -u $tf
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_posix_lock5 {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin posix-lock5
+	testbus_trace "Grab shared POSIX locks on two clients"
+	nfs_run_client $NFS_TOOL lock -t 5 $tf &
+	if ! nfs_run_second --timeout 5 $NFS_TOOL lock -t 1 $tf; then
+		testbus_test_failure "Failed to grab shared lock on second client"
+	fi
+
+	if ! wait; then
+		testbus_test_failure "Failed to grab shared lock on first client"
+	fi
+
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_posix_lock6 {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin posix-lock6
+	testbus_trace "Grab exclusive POSIX lock one first client"
+	nfs_run_client $NFS_TOOL lock -t 10 -x $tf &
+	sleep 1
+
+	testbus_trace "Try to grab shared lock on second client, nonblocking - this should fail"
+	if __nfs_run_second --timeout 1 $NFS_TOOL lock -t 1 -n $tf; then
+		testbus_test_failure "Grabbing the lock on the second client succeeded"
+	else
+		testbus_trace "Good; fails as it should!"
+	fi
+
+	testbus_trace "Try to grab shared lock on second client, blocking - this should block, then succeed"
+	if ! nfs_run_second --timeout 20 $NFS_TOOL lock -t 1 $tf; then
+		testbus_test_failure "Blocking lock never acquired"
+	fi
+
+	if ! wait; then
+		testbus_test_failure "Failed to grab shared lock on first client"
+	fi
+
+	# Try to kill any leftover nfs tool processes
+	__nfs_run_client /sbin/killproc -9 $NFS_TOOL
+	__nfs_run_second /sbin/killproc -9 $NFS_TOOL
+
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_flock1 {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin flock
+	testbus_trace "Grab a shared flock lock"
+	nfs_run_client $NFS_TOOL lock -t 1 -b $tf
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_flock2 {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin flock2
+	testbus_trace "Grab an exclusive flock lock"
+	nfs_run_client $NFS_TOOL lock -t 1 -x -b $tf
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+function nfs_test_flock3 {
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	testbus_test_begin flock3
+	testbus_trace "Grab shared flock locks on two clients"
+	nfs_run_client $NFS_TOOL lock -t 5 -b $tf &
+	sleep 1
+
+	if ! __nfs_run_second --timeout 5 $NFS_TOOL lock -t 1 -b $tf; then
+		testbus_test_failure "Failed to grab shared lock on second client"
+	fi
+
+	if ! wait; then
+		testbus_test_failure "Failed to grab shared lock on first client"
+	fi
+
+	__nfs_run_client /bin/rm -f $tf
+	testbus_test_success
+}
+
+##################################################################
+# Test basic NFS file locking
+##################################################################
+function nfs_test_locking_setup {
+
+	nfs_server_write_exports - <<EOF
+/srv/nfs/dir1	*(rw,no_root_squash)
+EOF
+}
+
+function nfs_test_locking {
+
+	mount_options="$*"
+
+	server_dir=/srv/nfs/dir1
+	client_dir=/mnt/nfs1
+
+	testbus_test_begin mount
+	if ! nfs_run_client /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
+		echo "Skipping NFS tests for this set of options" >&2
+		return
+	fi
+	if ! nfs_run_second /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
+		echo "Skipping NFS tests for this set of options" >&2
+		return
+	fi
+
+	nfs_test_posix_lock1 $client_dir
+	nfs_test_posix_lock2 $client_dir
+	nfs_test_posix_lock3 $client_dir
+	nfs_test_posix_lock4 $client_dir
+	nfs_test_posix_lock5 $client_dir
+	nfs_test_posix_lock6 $client_dir
+	nfs_test_flock1 $client_dir
+	nfs_test_flock2 $client_dir
+	nfs_test_flock3 $client_dir
+
+	testbus_test_begin unmount
+	nfs_run_client /bin/umount $client_dir
+	nfs_run_second /bin/umount $client_dir
+	testbus_test_success
+}
+
+##################################################################
 # Ensure that file attributes are validated when reopening a
 # file (also called close-to-open (cto) consistency
 ##################################################################
@@ -636,12 +830,17 @@ function nfs_test_mmap_coherence {
 
 	testbus_test_begin mmap-coherence
 
+	testbus-client get-events --purge $NFS_CLIENT >/dev/null 
+
+	# Turn on lockd debugging
+	__nfs_run_client /usr/sbin/rpcdebug -m nlm all
+
 	# On client1, start the mmap challenger
 	# FIXME: there should be another way to run a command in the background
-	__nfs_run_client $NFS_TOOL mmap2 -c 16 $tf &
+	__nfs_run_client $NFS_TOOL mmap2 -t 30 -c 16 $tf &
 
 	# On client2, start the responder
-	if ! __nfs_run_second $NFS_TOOL mmap2 -r -c 16 $tf; then
+	if ! __nfs_run_second $NFS_TOOL mmap2 -r -t 30 -c 16 $tf; then
 		testbus_test_failure
 	fi
 
@@ -649,6 +848,10 @@ function nfs_test_mmap_coherence {
 	if ! wait; then
 		testbus_test_failure "challenger exited with error"
 	fi
+
+	# Turn off lockd debugging
+	__nfs_run_client /usr/sbin/rpcdebug -m nlm -c all
+	testbus-client get-events --purge $NFS_CLIENT
 
 	__nfs_run_client /bin/rm -f $tf
 	testbus_test_success
@@ -683,6 +886,7 @@ function nfs_test_coherence {
 	fi
 
 	nfs_test_cto $client_dir
+	nfs_test_mmap_coherence $client_dir
 
 	testbus_test_begin unmount
 	nfs_run_client /bin/umount $client_dir
