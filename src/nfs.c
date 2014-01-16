@@ -50,6 +50,7 @@ struct file_data {
 
 
 static int	nfscreate(int argc, char **argv);
+static int	nfsverify(int argc, char **argv);
 static int	nfsmknod(int argc, char **argv);
 static int	nfsopen(int argc, char **argv);
 static int	nfslock(int argc, char **argv);
@@ -64,9 +65,10 @@ static int	nfschmod(int argc, char **argv);
 static int	parse_size(const char *, size_t *);
 static int	parse_device(const char *, dev_t *);
 
-static void	init_file(struct file_data *data, const char *name, size_t filesize);
+static int	create_file(struct file_data *data, const char *name, int flags, size_t filesize);
+static int	open_existing_file(struct file_data *data, const char *name, int flags);
 static int	generate_file(struct file_data *data, const char *name, size_t filesize);
-static int	__generate_file(struct file_data *data, int fd);
+static int	__generate_file(struct file_data *data, int fd, int use_mmap);
 static int	verify_file(const char *ident, int fd, const struct file_data *data);
 static int	verify_file_stat(const char *pathname, int format, dev_t dev, mode_t permissions);
 static int	make_socket(const char *, mode_t mode);
@@ -99,6 +101,7 @@ usage:
 		fprintf(stderr,
 			"Usage:\n"
 			"nfs create-file file ...\n"
+			"nfs verify-file file ...\n"
 			"nfs create-special path ...\n"
 			"nfs lock [-bntx] file ...\n"
 			"nfs silly-rename file1 file2\n"
@@ -117,6 +120,9 @@ usage:
 
 	if (!strcmp(argv[0], "create-file")) {
 		res = nfscreate(argc, argv);
+	} else
+	if (!strcmp(argv[0], "verify-file")) {
+		res = nfsverify(argc, argv);
 	} else
 	if (!strcmp(argv[0], "create-special")) {
 		res = nfsmknod(argc, argv);
@@ -162,13 +168,18 @@ nfscreate(int argc, char **argv)
 {
 	int	opt_flags = O_CREAT | O_WRONLY;
 	size_t	opt_filesize = 4096;
+	int	opt_mmap = 0;
 	int	c, fd;
 
-	while ((c = getopt(argc, argv, "c:n:x")) != -1) {
+	while ((c = getopt(argc, argv, "c:mn:x")) != -1) {
 		switch (c) {
 		case 'c':
 			if (!parse_size(optarg, &opt_filesize))
 				return 1;
+			break;
+		case 'm':
+			opt_mmap = 1;
+			opt_flags = (opt_flags & ~O_ACCMODE) | O_RDWR;
 			break;
 		case 'n':
 			opt_flags |= O_NONBLOCK;
@@ -193,14 +204,43 @@ nfscreate(int argc, char **argv)
 	while (optind < argc) {
 		struct file_data fdata;
 
-		init_file(&fdata, argv[optind++], opt_filesize);
+		fd = create_file(&fdata, argv[optind++], opt_flags, opt_filesize);
+		if (fd < 0)
+			return 1;
+		if (__generate_file(&fdata, fd, opt_mmap) < 0)
+			return 1;
+		close(fd);
+	}
+	return 0;
+}
 
-		fd = open(fdata.name, opt_flags, 0644);
-		if (fd < 0) {
-			perror(fdata.name);
+int
+nfsverify(int argc, char **argv)
+{
+	//int	opt_mmap = 0;
+	int	c, fd;
+
+	while ((c = getopt(argc, argv, "")) != -1) {
+		switch (c) {
+		default:
+			fprintf(stderr, "Invalid option\n");
 			return 1;
 		}
-		if (__generate_file(&fdata, fd) < 0)
+	}
+
+	if (optind == argc) {
+		fprintf(stderr, "need file name(s)\n");
+		return 1;
+	}
+
+	while (optind < argc) {
+		struct file_data fdata;
+
+		fd = open_existing_file(&fdata, argv[optind++], O_RDONLY);
+		if (fd < 0)
+			return 1;
+
+		if (verify_file("file", fd, &fdata) < 0)
 			return 1;
 		close(fd);
 	}
@@ -1160,12 +1200,13 @@ nfsmmap2(int argc, char **argv)
 	int		opt_responder = 0;
 	int		opt_sync = 0;
 	int		opt_timeout = 0;
+	int		opt_wait_ms = 100;
 	int		c, fd, res = 1;
 	unsigned char	*addr = NULL;
 	char		*name;
 	size_t		mem_size;
 
-	while ((c = getopt(argc, argv, "c:i:rst:")) != -1) {
+	while ((c = getopt(argc, argv, "c:i:rst:w:")) != -1) {
 		switch (c) {
 		case 'c':
 			opt_count = atoi(optarg);
@@ -1180,7 +1221,12 @@ nfsmmap2(int argc, char **argv)
 			opt_sync = 1;
 			break;
 		case 't':
+			/* This is how long we will try overall before we give up */
 			opt_timeout = atoi(optarg);
+			break;
+		case 'w':
+			/* This is how long we will sleep between attempts to verify the response */
+			opt_wait_ms = atoi(optarg);
 			break;
 		default:
 			fprintf(stderr, "Invalid option\n");
@@ -1272,7 +1318,7 @@ nfsmmap2(int argc, char **argv)
 			while (current->response != current->challenge) {
 				mmap2_unlock_record(fd, index);
 				write(2, ".", 1);
-				usleep(100000);
+				usleep(opt_wait_ms * 1000);
 				if (mmap2_lock_record(fd, index) < 0)
 					goto out;
 			}
@@ -1412,10 +1458,46 @@ init_file(struct file_data *data, const char *name, size_t filesize)
 }
 
 static int
-__generate_file(struct file_data *data, int fd)
+create_file(struct file_data *data, const char *name, int flags, size_t filesize)
+{
+	int fd;
+
+	if ((fd = open(name, flags, 0644)) < 0) {
+		fprintf(stderr, "unable to open file %s: %m\n", name);
+		return -1;
+	}
+
+	init_file(data, name, filesize);
+	return fd;
+}
+
+static int
+open_existing_file(struct file_data *data, const char *name, int flags)
+{
+	struct stat stb;
+	int fd;
+
+	if ((fd = open(name, flags, 0644)) < 0) {
+		fprintf(stderr, "unable to open file %s: %m\n", name);
+		return -1;
+	}
+
+	if (fstat(fd, &stb) < 0) {
+		fprintf(stderr, "unable to stat \"%s\": %m", data->name);
+		return -1;
+	}
+	data->dev = stb.st_dev;
+	data->ino = stb.st_ino;
+	data->size = stb.st_size;
+	return fd;
+}
+
+static int
+__generate_file(struct file_data *data, int fd, int use_mmap)
 {
 	struct stat stb;
 	unsigned char buffer[4096];
+	unsigned char *mapped = NULL;
 	size_t written;
 
 	if (fstat(fd, &stb) < 0) {
@@ -1428,6 +1510,17 @@ __generate_file(struct file_data *data, int fd)
 	if (data->size > SILLY_MAX)
 		data->size = SILLY_MAX;
 
+	if (use_mmap) {
+		ftruncate(fd, data->size);
+
+		mapped = mmap(NULL, data->size, PROT_WRITE|PROT_READ, MAP_SHARED, fd, 0);
+		if (mapped == MAP_FAILED) {
+			fprintf(stderr, "%s: unable to mmap file: %m\n", data->name);
+			return -1;
+		}
+		memset(mapped, 0, data->size);
+	}
+
 	for (written = 0; written < data->size; ) {
 		size_t chunk;
 		ssize_t n;
@@ -1438,15 +1531,20 @@ __generate_file(struct file_data *data, int fd)
 		n = generate_buffer(data, written, buffer, pad32(chunk));
 		assert(n >= chunk);
 
-		n = write(fd, buffer, chunk);
-		if (n < 0) {
-			fprintf(stderr, "%s: write error: %m\n", data->name);
-			return -1;
-		}
-		if (n != chunk) {
-			fprintf(stderr, "%s: short write (wrote %lu rather than %lu)\n", data->name,
-					(long) n, (long) chunk);
-			return -1;
+		if (mapped) {
+			memcpy(mapped, buffer, chunk);
+			mapped += chunk;
+		} else {
+			n = write(fd, buffer, chunk);
+			if (n < 0) {
+				fprintf(stderr, "%s: write error: %m\n", data->name);
+				return -1;
+			}
+			if (n != chunk) {
+				fprintf(stderr, "%s: short write (wrote %lu rather than %lu)\n", data->name,
+						(long) n, (long) chunk);
+				return -1;
+			}
 		}
 		written += n;
 	}
@@ -1459,15 +1557,11 @@ generate_file(struct file_data *data, const char *name, size_t filesize)
 {
 	int fd;
 
-	init_file(data, name, filesize);
-
-	fd = open(data->name, O_RDWR|O_CREAT|O_TRUNC, 0644);
-	if (fd < 0) {
-		perror(data->name);
+	fd = create_file(data, name, O_RDWR|O_CREAT|O_TRUNC, filesize);
+	if (fd < 0)
 		return -1;
-	}
 
-	if (__generate_file(data, fd) < 0) {
+	if (__generate_file(data, fd, 0) < 0) {
 		close(fd);
 		return -1;
 	}
