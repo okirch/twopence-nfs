@@ -1139,6 +1139,13 @@ mmap2_record(unsigned char *base_addr, unsigned int slot)
 	return ((struct mmap2_record *) base_addr) + slot;
 }
 
+static void
+exit_timeout(int sig)
+{
+	write(2, "\nTimeout.", 9);
+	exit(1);
+}
+
 /*
  * This test case verifies several things at once
  *  - mmap consistency
@@ -1152,12 +1159,13 @@ nfsmmap2(int argc, char **argv)
 	unsigned int	opt_iterations = 128;
 	int		opt_responder = 0;
 	int		opt_sync = 0;
+	int		opt_timeout = 0;
 	int		c, fd, res = 1;
 	unsigned char	*addr = NULL;
 	char		*name;
 	size_t		mem_size;
 
-	while ((c = getopt(argc, argv, "c:i:rs")) != -1) {
+	while ((c = getopt(argc, argv, "c:i:rst:")) != -1) {
 		switch (c) {
 		case 'c':
 			opt_count = atoi(optarg);
@@ -1170,6 +1178,9 @@ nfsmmap2(int argc, char **argv)
 			break;
 		case 's':
 			opt_sync = 1;
+			break;
+		case 't':
+			opt_timeout = atoi(optarg);
 			break;
 		default:
 			fprintf(stderr, "Invalid option\n");
@@ -1196,6 +1207,11 @@ nfsmmap2(int argc, char **argv)
 	addr = mmap(NULL, mem_size, PROT_WRITE|PROT_READ, MAP_SHARED, fd, 0);
 	if (addr == MAP_FAILED)
 		goto out;
+
+	if (opt_timeout) {
+		signal(SIGALRM, exit_timeout);
+		alarm(opt_timeout);
+	}
 
 	if (opt_responder) {
 		unsigned int index = 0;
@@ -1241,7 +1257,7 @@ nfsmmap2(int argc, char **argv)
 		while (opt_iterations--) {
 			struct mmap2_record *current = mmap2_record(addr, index);
 
-			/* Locking the next record here does two things*
+			/* Locking the next record here does two things:
 			 *  a) it prevents the responder from overtaking us
 			 *  b) it causes the responder to block on its attempt
 			 *     to lock that record.
