@@ -60,7 +60,7 @@ static int	nfsstat(int argc, char **argv);
 static int	nfsstatfs(int argc, char **argv);
 static int	nfsstatvfs(int argc, char **argv);
 static int	nfsmmap(int argc, char **argv);
-static int	nfsmmap2(int argc, char **argv);
+static int	nfslock_coherence(int argc, char **argv);
 static int	nfschmod(int argc, char **argv);
 static int	parse_size(const char *, size_t *);
 static int	parse_device(const char *, dev_t *);
@@ -110,7 +110,7 @@ usage:
 			"nfs statfs file ...\n"
 			"nfs statvfs file ...\n"
 			"nfs mmap [-c size] file ...\n"
-			"nfs mmap2 file\n"
+			"nfs coherence file\n"
 			"nfs chmod file ...\n"
 			"nfs mknod file ...\n"
 		       );
@@ -151,8 +151,9 @@ usage:
 	if (!strcmp(argv[0], "mmap")) {
 		res = nfsmmap(argc, argv);
 	} else
-	if (!strcmp(argv[0], "mmap2")) {
-		res = nfsmmap2(argc, argv);
+	if (!strcmp(argv[0], "coherence")
+	 || !strcmp(argv[0], "mmap2")) {
+		res = nfslock_coherence(argc, argv);
 	} else
 	if (!strcmp(argv[0], "chmod")) {
 		res = nfschmod(argc, argv);
@@ -1138,6 +1139,18 @@ out:	if (res)
  * This needs more work, especially for the multi-client scenario where we wish to
  * verify data consistency.
  */
+struct mmap2_file {
+	int			fd;
+	unsigned int		size;
+	unsigned int		nslots;
+
+	char *			mapped;
+	int			sync;
+
+	struct mmap2_record *	(*read)(struct mmap2_file *, unsigned int slot);
+	int			(*write)(struct mmap2_file *, unsigned int slot, struct mmap2_record *);
+};
+
 struct mmap2_record {
 	uint32_t	challenge;
 	uint32_t	response;
@@ -1162,13 +1175,13 @@ __mmap2_lock_record(int fd, unsigned int slot, int type)
 }
 
 static int
-mmap2_lock_record(int fd, unsigned int slot)
+mmap2_lock_record(struct mmap2_file *mf, unsigned int slot)
 {
-	return __mmap2_lock_record(fd, slot, F_WRLCK);
+	return __mmap2_lock_record(mf->fd, slot, F_WRLCK);
 }
 
 static int
-mmap2_is_record_locked(int fd, unsigned int slot)
+mmap2_is_record_locked(struct mmap2_file *mf, unsigned int slot)
 {
 	struct flock fl;
 
@@ -1177,7 +1190,7 @@ mmap2_is_record_locked(int fd, unsigned int slot)
 //	fl.l_whence = SEEK_SET;
 	fl.l_start = slot * mmap2_record_size;
 	fl.l_len = mmap2_record_size;
-	if (fcntl(fd, F_GETLK, &fl) < 0) {
+	if (fcntl(mf->fd, F_GETLK, &fl) < 0) {
 		fprintf(stderr, "fcntl(F_GETLK): %m\n");
 		return 0;
 	}
@@ -1185,15 +1198,182 @@ mmap2_is_record_locked(int fd, unsigned int slot)
 }
 
 static int
-mmap2_unlock_record(int fd, unsigned int slot)
+mmap2_unlock_record(struct mmap2_file *mf, unsigned int slot)
 {
-	return __mmap2_lock_record(fd, slot, F_UNLCK);
+	return __mmap2_lock_record(mf->fd, slot, F_UNLCK);
+}
+
+/*
+ * mmap case: quite easy
+ */
+static struct mmap2_record *
+__mmap2_record(char *base_addr, unsigned int slot)
+{
+	return (struct mmap2_record *) (base_addr + slot * mmap2_record_size);
 }
 
 static struct mmap2_record *
-mmap2_record(unsigned char *base_addr, unsigned int slot)
+mmap2_read_mapped(struct mmap2_file *mf, unsigned int slot)
 {
-	return ((struct mmap2_record *) base_addr) + slot;
+	/* mmap case is easy */
+	return __mmap2_record(mf->mapped, slot);
+}
+
+static int
+mmap2_write_mapped(struct mmap2_file *mf, unsigned int slot, struct mmap2_record *record)
+{
+	/* mmap case is easy */
+	if (mf->sync && msync(record, mmap2_record_size, MS_SYNC) < 0) {
+		fprintf(stderr, "synching record failed (addr=%p): %m\n", record);
+		return -1;
+	}
+	return 0;
+}
+
+static int
+mmap2_open_mapped(struct mmap2_file *mf, const char *pathname, int do_sync, unsigned int nslots)
+{
+	struct stat stb;
+
+	memset(mf, 0, sizeof(*mf));
+	mf->fd = -1;
+	mf->sync = do_sync;
+
+	if (nslots != 0) {
+		if ((mf->fd = open(pathname, O_RDWR|O_CREAT|O_TRUNC, 0644)) < 0) {
+			perror(pathname);
+			return -1;
+		}
+
+		mf->nslots = nslots;
+		mf->size = nslots * mmap2_record_size;
+		if (ftruncate(mf->fd, mf->size) < 0) {
+			fprintf(stderr, "unable to resize file to %u bytes: %m", mf->size);
+			return -1;
+		}
+	} else {
+		if ((mf->fd = open(pathname, O_RDWR, 0644)) < 0) {
+			perror(pathname);
+			return -1;
+		}
+
+		if (fstat(mf->fd, &stb) < 0) {
+			perror("fstat");
+			return -1;
+		}
+
+		mf->size = stb.st_size;
+		mf->nslots = mf->size / mmap2_record_size;
+	}
+
+	mf->mapped = mmap(NULL, mf->size, PROT_WRITE|PROT_READ, MAP_SHARED, mf->fd, 0);
+	if (mf->mapped == MAP_FAILED) {
+		fprintf(stderr, "unable to map file: %m\n");
+		return -1;
+	}
+
+	mf->read = mmap2_read_mapped;
+	mf->write = mmap2_write_mapped;
+
+	return 0;
+}
+
+static struct mmap2_record *
+mmap2_read_stdio(struct mmap2_file *mf, unsigned int slot)
+{
+	static struct mmap2_record buffer;
+	int n;
+
+	if (lseek(mf->fd, slot * mmap2_record_size, SEEK_SET) < 0) {
+		fprintf(stderr, "cannot seek to slot %u: %m\n", slot);
+		return NULL;
+	}
+
+	n = read(mf->fd, &buffer, sizeof(buffer));
+	if (n < 0) {
+		fprintf(stderr, "error reading slot %u: %m\n", slot);
+		return NULL;
+	}
+	if (n != sizeof(buffer)) {
+		fprintf(stderr, "short read on slot %u\n", slot);
+		return NULL;
+	}
+
+	return &buffer;
+}
+
+static int
+mmap2_write_stdio(struct mmap2_file *mf, unsigned int slot, struct mmap2_record *record)
+{
+	int n;
+
+	if (lseek(mf->fd, slot * mmap2_record_size, SEEK_SET) < 0) {
+		fprintf(stderr, "cannot seek to slot %u: %m\n", slot);
+		return -1;
+	}
+
+	n = write(mf->fd, record, sizeof(*record));
+	if (n < 0) {
+		fprintf(stderr, "error writing slot %u: %m\n", slot);
+		return -1;
+	}
+	if (n != sizeof(*record)) {
+		fprintf(stderr, "short write on slot %u\n", slot);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int
+mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int do_sync, unsigned int nslots)
+{
+	struct stat stb;
+
+	memset(mf, 0, sizeof(*mf));
+	mf->fd = -1;
+	mf->sync = do_sync;
+
+	if (nslots != 0) {
+		if ((mf->fd = open(pathname, O_RDWR|O_CREAT|O_TRUNC, 0644)) < 0) {
+			perror(pathname);
+			return -1;
+		}
+
+		mf->nslots = nslots;
+		mf->size = nslots * mmap2_record_size;
+		if (ftruncate(mf->fd, mf->size) < 0) {
+			fprintf(stderr, "unable to resize file to %u bytes: %m", mf->size);
+			return -1;
+		}
+	} else {
+		if ((mf->fd = open(pathname, O_RDWR, 0644)) < 0) {
+			perror(pathname);
+			return -1;
+		}
+
+		if (fstat(mf->fd, &stb) < 0) {
+			perror("fstat");
+			return -1;
+		}
+
+		mf->size = stb.st_size;
+		mf->nslots = mf->size / mmap2_record_size;
+	}
+
+	mf->read = mmap2_read_stdio;
+	mf->write = mmap2_write_stdio;
+
+	return 0;
+}
+
+void
+mmap2_close(struct mmap2_file *mf)
+{
+	if (mf->mapped)
+		munmap(mf->mapped, mf->size);
+	if (mf->fd >= 0)
+		close(mf->fd);
 }
 
 static void
@@ -1210,7 +1390,7 @@ exit_timeout(int sig)
  *  - lock block/grant behavior
  */
 int
-nfsmmap2(int argc, char **argv)
+nfslock_coherence(int argc, char **argv)
 {
 	unsigned int 	opt_count = 0;
 	unsigned int	opt_iterations = 128;
@@ -1218,18 +1398,21 @@ nfsmmap2(int argc, char **argv)
 	int		opt_sync = 0;
 	int		opt_timeout = 0;
 	int		opt_wait_ms = 100;
-	int		c, fd, res = 1;
-	unsigned char	*addr = NULL;
+	int		opt_mmap = 0;
+	int		c, res = 1;
+	struct mmap2_file mf;
 	char		*name;
-	size_t		mem_size;
 
-	while ((c = getopt(argc, argv, "c:i:rst:w:")) != -1) {
+	while ((c = getopt(argc, argv, "c:i:mrst:w:")) != -1) {
 		switch (c) {
 		case 'c':
 			opt_count = atoi(optarg);
 			break;
 		case 'i':
 			opt_iterations = atoi(optarg);
+			break;
+		case 'm':
+			opt_mmap = 1;
 			break;
 		case 'r':
 			opt_responder = 1;
@@ -1258,20 +1441,20 @@ nfsmmap2(int argc, char **argv)
 
 	name = argv[optind];
 
-	if (opt_count <= 2)
+	if (opt_responder)
+		opt_count = 0;
+	else if (opt_count <= 2)
 		opt_count = 2;
 
 	mmap2_record_size = getpagesize();
-	mem_size = opt_count * mmap2_record_size;
 
-	if ((fd = open(name, O_RDWR|O_CREAT, 0644)) < 0)
-		goto out;
-
-	ftruncate(fd, mem_size);
-
-	addr = mmap(NULL, mem_size, PROT_WRITE|PROT_READ, MAP_SHARED, fd, 0);
-	if (addr == MAP_FAILED)
-		goto out;
+	if (opt_mmap) {
+		if (mmap2_open_mapped(&mf, name, opt_sync, opt_count) < 0)
+			goto out;
+	} else {
+		if (mmap2_open_stdio(&mf, name, opt_sync, opt_count) < 0)
+			goto out;
+	}
 
 	if (opt_timeout) {
 		signal(SIGALRM, exit_timeout);
@@ -1291,29 +1474,32 @@ nfsmmap2(int argc, char **argv)
 		 *    - make next slot the current one
 		 */
 
-		if (mmap2_lock_record(fd, index) < 0)
+		if (mmap2_lock_record(&mf, index) < 0)
 			goto out;
 		while (opt_iterations--) {
-			struct mmap2_record *record = mmap2_record(addr, index);
+			struct mmap2_record *current;
+
+			if (!(current = mf.read(&mf, index)))
+				goto out;
 
 			/* Update the response */
-			record->response = record->challenge;
+			current->response = current->challenge;
+			if (mf.write(&mf, index, current) < 0)
+				goto out;
 			write(2, "o", 1);
 
-			next = (index + 1) % opt_count;
-			if (mmap2_lock_record(fd, next) < 0)
+			next = (index + 1) % mf.nslots;
+			if (mmap2_lock_record(&mf, next) < 0)
 				goto out;
 
 			/* Unlocking should flush out all changes */
-			mmap2_unlock_record(fd, index);
+			mmap2_unlock_record(&mf, index);
 			index = next;
 		}
 
-		mmap2_unlock_record(fd, index);
+		mmap2_unlock_record(&mf, index);
 	} else {
 		unsigned int index = 1, prev = 0, next;
-
-		memset(addr, 0, mem_size);
 
 		/* Challenger algorithm:
 		 *  - start at slot 1
@@ -1326,10 +1512,13 @@ nfsmmap2(int argc, char **argv)
 		 *    - unlock current slot
 		 *    - make slot N + 1 the current one
 		 */
-		if (mmap2_lock_record(fd, index) < 0)
+		if (mmap2_lock_record(&mf, index) < 0)
 			goto out;
 		while (opt_iterations--) {
-			struct mmap2_record *current = mmap2_record(addr, index);
+			struct mmap2_record *current;
+
+			if (!(current = mf.read(&mf, index)))
+				goto out;
 
 			if (current->response != current->challenge) {
 				fprintf(stderr, "Bad record %u, challenge=%u, response=%u",
@@ -1338,13 +1527,14 @@ nfsmmap2(int argc, char **argv)
 			}
 
 			current->challenge++;
-			if (opt_sync)
-				msync(current, mmap2_record_size, MS_SYNC);
+
+			if (mf.write(&mf, index, current) < 0)
+				goto out;
 			write(2, "+", 1);
 
 			/* Wait for the responder to lock the previous record,
 			 * then proceed. */
-			while (!mmap2_is_record_locked(fd, prev)) {
+			while (!mmap2_is_record_locked(&mf, prev)) {
 				write(2, ".", 1);
 				usleep(opt_wait_ms * 1000);
 			}
@@ -1357,11 +1547,11 @@ nfsmmap2(int argc, char **argv)
 			 *     responder should be woken up and be given a chance
 			 *     to claim the lock
 			 */
-			next = (index + 1) % opt_count;
-			if (mmap2_lock_record(fd, next) < 0)
+			next = (index + 1) % mf.nslots;
+			if (mmap2_lock_record(&mf, next) < 0)
 				goto out;
 
-			mmap2_unlock_record(fd, index);
+			mmap2_unlock_record(&mf, index);
 
 			prev = index;
 			index = next;
@@ -1374,10 +1564,7 @@ out:
 	write(2, "\n", 1);
 	if (res)
 		perror(name);
-	if (addr)
-		munmap(addr, mem_size);
-	if (fd >= 0)
-		close(fd);
+	mmap2_close(&mf);
 
 	return res;
 }
