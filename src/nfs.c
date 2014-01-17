@@ -1143,7 +1143,7 @@ struct mmap2_record {
 	uint32_t	response;
 };
 
-#define MMAP2_RECORD_SIZE	sizeof(struct mmap2_record)
+static unsigned int		mmap2_record_size;
 
 static int
 __mmap2_lock_record(int fd, unsigned int slot, int type)
@@ -1152,8 +1152,8 @@ __mmap2_lock_record(int fd, unsigned int slot, int type)
 
 	fl.l_type = type;
 	fl.l_whence = SEEK_SET;
-	fl.l_start = slot * MMAP2_RECORD_SIZE;
-	fl.l_len = MMAP2_RECORD_SIZE;
+	fl.l_start = slot * mmap2_record_size;
+	fl.l_len = mmap2_record_size;
 	if (fcntl(fd, F_SETLKW, &fl) < 0) {
 		fprintf(stderr, "fcntl(F_SETLKW, %u): %m\n", type);
 		return -1;
@@ -1175,8 +1175,8 @@ mmap2_is_record_locked(int fd, unsigned int slot)
 	memset(&fl, 0, sizeof(fl));
 //	fl.l_type = F_UNLCK;
 //	fl.l_whence = SEEK_SET;
-	fl.l_start = slot * MMAP2_RECORD_SIZE;
-	fl.l_len = MMAP2_RECORD_SIZE;
+	fl.l_start = slot * mmap2_record_size;
+	fl.l_len = mmap2_record_size;
 	if (fcntl(fd, F_GETLK, &fl) < 0) {
 		fprintf(stderr, "fcntl(F_GETLK): %m\n");
 		return 0;
@@ -1260,7 +1260,9 @@ nfsmmap2(int argc, char **argv)
 
 	if (opt_count <= 2)
 		opt_count = 2;
-	mem_size = opt_count * MMAP2_RECORD_SIZE;
+
+	mmap2_record_size = getpagesize();
+	mem_size = opt_count * mmap2_record_size;
 
 	if ((fd = open(name, O_RDWR|O_CREAT, 0644)) < 0)
 		goto out;
@@ -1337,7 +1339,7 @@ nfsmmap2(int argc, char **argv)
 
 			current->challenge++;
 			if (opt_sync)
-				msync(current, MMAP2_RECORD_SIZE, MS_SYNC);
+				msync(current, mmap2_record_size, MS_SYNC);
 			write(2, "+", 1);
 
 			/* Wait for the responder to lock the previous record,
