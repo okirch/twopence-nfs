@@ -1322,6 +1322,11 @@ mmap2_write_stdio(struct mmap2_file *mf, unsigned int slot, struct mmap2_record 
 		return -1;
 	}
 
+	if (mf->sync && fdatasync(mf->fd) < 0) {
+		fprintf(stderr, "synching record failed (slot %u): %m\n", slot);
+		return -1;
+	}
+
 	return 0;
 }
 
