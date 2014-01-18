@@ -2,7 +2,7 @@
 bindir	= /usr/bin
 testdir	= /usr/share/testbus/suites
 
-CFLAGS	= -Wall -O2
+CFLAGS	= -Wall -g
 APPS	= nfs lock-close-open lockbench
 SCRIPTS	= testbus/nfs \
 	  testbus/nfs.functions \

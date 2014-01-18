@@ -36,6 +36,7 @@
 #include <sys/statvfs.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <stdint.h>
 #include <signal.h>
@@ -1116,7 +1117,6 @@ nfsmmap(int argc, char **argv)
 				goto out;
 			}
 		}
-		umask(037777777177);
 		if (opt_write > 1)
 			msync(addr, count, MS_SYNC);
 	}
@@ -1156,21 +1156,43 @@ struct mmap2_record {
 	uint32_t	response;
 };
 
+static int			mmap2_timeout = 0;
 static unsigned int		mmap2_record_size;
+static unsigned int		mmap2_locks_acquired = 0;
+static unsigned int		mmap2_lock_delays[61];
 
 static int
 __mmap2_lock_record(int fd, unsigned int slot, int type)
 {
+	struct timeval t0, t1, delta;
+	unsigned int elapsed;
 	struct flock fl;
 
 	fl.l_type = type;
 	fl.l_whence = SEEK_SET;
 	fl.l_start = slot * mmap2_record_size;
 	fl.l_len = mmap2_record_size;
+
+	gettimeofday(&t0, NULL);
 	if (fcntl(fd, F_SETLKW, &fl) < 0) {
 		fprintf(stderr, "fcntl(F_SETLKW, %u): %m\n", type);
 		return -1;
 	}
+	gettimeofday(&t1, NULL);
+	timersub(&t1, &t0, &delta);
+
+	if ((elapsed = delta.tv_sec) > 5)
+		fprintf(stderr, "\nWarning: long delay in %s the lock (%u seconds)\n",
+				(type == F_UNLCK)? "releasing" : "acquiring",
+				elapsed);
+
+	if (type != F_UNLCK) {
+		if (elapsed >= 60)
+			elapsed = 60;
+		mmap2_lock_delays[elapsed]++;
+		mmap2_locks_acquired++;
+	}
+
 	return 0;
 }
 
@@ -1382,10 +1404,10 @@ mmap2_close(struct mmap2_file *mf)
 }
 
 static void
-exit_timeout(int sig)
+__mmap2_timeout_handler(int sig)
 {
-	write(2, "\nTimeout.", 9);
-	exit(1);
+	write(2, "\nTimeout.\n", 10);
+	mmap2_timeout = 1;
 }
 
 /*
@@ -1404,14 +1426,18 @@ nfslock_coherence(int argc, char **argv)
 	int		opt_timeout = 0;
 	int		opt_wait_ms = 100;
 	int		opt_mmap = 0;
+	int		opt_delay_report = 0;
 	int		c, res = 1;
 	struct mmap2_file mf;
 	char		*name;
 
-	while ((c = getopt(argc, argv, "c:i:mrst:w:")) != -1) {
+	while ((c = getopt(argc, argv, "c:di:mrst:w:")) != -1) {
 		switch (c) {
 		case 'c':
 			opt_count = atoi(optarg);
+			break;
+		case 'd':
+			opt_delay_report = 1;
 			break;
 		case 'i':
 			opt_iterations = atoi(optarg);
@@ -1462,7 +1488,13 @@ nfslock_coherence(int argc, char **argv)
 	}
 
 	if (opt_timeout) {
-		signal(SIGALRM, exit_timeout);
+		struct sigaction act;
+
+		memset(&act, 0, sizeof(act));
+		/* Do *not* set sa_flags to SA_RESTART - we specifically do not want
+		 * SETLK attempts to restart on timeout */
+		act.sa_handler = __mmap2_timeout_handler;
+		sigaction(SIGALRM, &act, NULL);
 		alarm(opt_timeout);
 	}
 
@@ -1541,7 +1573,12 @@ nfslock_coherence(int argc, char **argv)
 			 * then proceed. */
 			while (!mmap2_is_record_locked(&mf, prev)) {
 				write(2, ".", 1);
-				usleep(opt_wait_ms * 1000);
+				if (usleep(opt_wait_ms * 1000) < 0) {
+					if (mmap2_timeout)
+						goto out;
+					perror("usleep");
+					goto out;
+				}
 			}
 
 			/* Locking the next record here does two things:
@@ -1567,10 +1604,26 @@ nfslock_coherence(int argc, char **argv)
 
 out:	
 	write(2, "\n", 1);
-	if (res)
-		perror(name);
-	mmap2_close(&mf);
+	if (opt_delay_report && mmap2_locks_acquired) {
+		printf("%u locks acquired.\n", mmap2_locks_acquired);
+		if (mmap2_lock_delays[0] == mmap2_locks_acquired) {
+			printf("All locks took less than 1 second to acquire\n");
+		} else {
+			unsigned int i, count;
 
+			printf("Distribution of lock delays:\n");
+			for (i = 0; i < 60; ++i) {
+				count = mmap2_lock_delays[i];
+				if (count != 0) {
+					printf("  %2us .. %2us: %4u (%2u%%)\n",
+							i, i + 1, count,
+							100 * count / mmap2_locks_acquired);
+				}
+			}
+		}
+	}
+
+	mmap2_close(&mf);
 	return res;
 }
 
