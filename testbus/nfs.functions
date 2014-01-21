@@ -742,6 +742,33 @@ function nfs_test_locking_setup {
 EOF
 }
 
+# Before running all the locking tests, make sure that the grace period has
+# expired.
+function nfs_test_wait_grace {
+
+	local dir tf ret
+
+	dir=$1; shift
+	tf=$dir/testfile
+
+	ret=0
+
+	testbus_test_begin grace-wait
+	testbus_trace "Wait for grace period to expire"
+	if ! __nfs_run_client --timeout 120 $NFS_TOOL lock -t 1 $tf; then
+		testbus_test_failure "Unable to obtain lock"
+
+		# Kill the command in case it's still running
+		__nfs_run_client /sbin/killproc -9 $NFS_TOOL
+		ret=1
+	else
+		testbus_test_success
+	fi
+
+	__nfs_run_client /bin/rm -f $tf
+	return $ret
+}
+
 function nfs_test_locking {
 
 	mount_options="$*"
@@ -759,15 +786,19 @@ function nfs_test_locking {
 		return
 	fi
 
-	nfs_test_posix_lock1 $client_dir
-	nfs_test_posix_lock2 $client_dir
-	nfs_test_posix_lock3 $client_dir
-	nfs_test_posix_lock4 $client_dir
-	nfs_test_posix_lock5 $client_dir
-	nfs_test_posix_lock6 $client_dir
-	nfs_test_flock1 $client_dir
-	nfs_test_flock2 $client_dir
-	nfs_test_flock3 $client_dir
+	if nfs_test_wait_grace $client_dir; then
+		nfs_test_posix_lock1 $client_dir
+		nfs_test_posix_lock2 $client_dir
+		nfs_test_posix_lock3 $client_dir
+		nfs_test_posix_lock4 $client_dir
+		nfs_test_posix_lock5 $client_dir
+		nfs_test_posix_lock6 $client_dir
+		nfs_test_flock1 $client_dir
+		nfs_test_flock2 $client_dir
+		nfs_test_flock3 $client_dir
+	else
+		testbus_trace "Skipping all lock tests"
+	fi
 
 	testbus_test_begin unmount
 	nfs_run_client /bin/umount $client_dir
@@ -823,25 +854,45 @@ function nfs_test_cto {
 ##################################################################
 # Test mmap/lock coherence behavior
 ##################################################################
-function nfs_test_mmap_coherence {
+function __nfs_test_lock_coherence {
+
+	local dir tf
 
 	dir=$1; shift
 	tf=$dir/testfile
 
-	testbus_test_begin mmap-coherence
-
-	testbus-client get-events --purge $NFS_CLIENT >/dev/null 
+	testbus-client get-events --purge $NFS_SECOND >/dev/null 
 
 	# Turn on lockd debugging
-	__nfs_run_client /usr/sbin/rpcdebug -m nlm all
+	__nfs_run_second /usr/sbin/rpcdebug -m nlm all
 
 	# On client1, start the mmap challenger
-	# FIXME: there should be another way to run a command in the background
-	__nfs_run_client $NFS_TOOL mmap2 -t 30 -c 16 $tf &
+	# FIXME: there should be a better way to run a command in the background
+	__nfs_run_client $NFS_TOOL mmap2 -t $timeout -w 500 "$@" $tf &
+
+	# The challenger create the test file, then locks it
+	# (it should really create a temp file, lock it, then move it to the
+	# final path).
+	echo -n "Waiting for challenger to start"
+	for n in `seq 1 10`; do
+		if __nfs_run_client /usr/bin/test -f $tf; then
+			break;
+		fi
+		echo -n "."
+		sleep 1
+	done
+
+	if ! __nfs_run_client /usr/bin/test -f $tf; then
+		testbus_test_failure "challenger did not start"
+		__nfs_run_client /sbin/killproc -9 $NFS_TOOL
+		return 1;
+	fi
+
+	sleep 1
 
 	# On client2, start the responder
-	if ! __nfs_run_second $NFS_TOOL mmap2 -r -t 30 -c 16 $tf; then
-		testbus_test_failure
+	if ! __nfs_run_second $NFS_TOOL mmap2 -r "$@" $tf; then
+		testbus_test_failure "responder failed"
 	fi
 
 	# wait for challenger
@@ -850,10 +901,37 @@ function nfs_test_mmap_coherence {
 	fi
 
 	# Turn off lockd debugging
-	__nfs_run_client /usr/sbin/rpcdebug -m nlm -c all
-	testbus-client get-events --purge $NFS_CLIENT
+	__nfs_run_second /usr/sbin/rpcdebug -m nlm -c all
+	testbus-client get-events --purge $NFS_SECOND
 
 	__nfs_run_client /bin/rm -f $tf
+}
+
+function nfs_test_mmap_coherence {
+
+	local dir
+	local timeout iterations slots
+
+	slots=16
+	iterations=32
+	timeout=120
+
+	dir=$1; shift
+
+	testbus_test_begin coherence-lock-stdio
+	__nfs_test_lock_coherence $dir -c $slots -i $iterations -t $timeout
+	testbus_test_success
+
+	testbus_test_begin coherence-lock-stdio-sync
+	__nfs_test_lock_coherence $dir -c $slots -i $iterations -t $timeout -s
+	testbus_test_success
+
+	testbus_test_begin coherence-lock-mmap
+	__nfs_test_lock_coherence $dir -c $slots -i $iterations -t $timeout -m
+	testbus_test_success
+
+	testbus_test_begin coherence-lock-mmap-sync
+	__nfs_test_lock_coherence $dir -c $slots -i $iterations -t $timeout -m -s
 	testbus_test_success
 }
 
@@ -885,35 +963,15 @@ function nfs_test_coherence {
 		return
 	fi
 
-	nfs_test_cto $client_dir
-	nfs_test_mmap_coherence $client_dir
+	if nfs_test_wait_grace $client_dir; then
+		#nfs_test_cto $client_dir
+		nfs_test_mmap_coherence $client_dir
+	else
+		testbus_trace "Skipping all lock/coherence tests"
+	fi
 
 	testbus_test_begin unmount
 	nfs_run_client /bin/umount $client_dir
 	nfs_run_second /bin/umount $client_dir
 	testbus_test_success
 }
-
-function nfs_test_allfunc {
-
-	group_name=$1; shift
-	testbus_group_begin $group_name
-
-	options="$@"
-
-	server_dir=/srv/nfs/dir1
-	client_dir=/mnt/nfs1
-
-	if nfs_run_client /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir -o $options; then
-		nfs_test_writefile $client_dir
-		nfs_test_chown $client_dir
-		nfs_test_chmod $client_dir
-		nfs_test_silly_rename $client_dir
-		nfs_run_client /bin/umount $client_dir
-	else
-		echo "Skipping NFS tests for this set of options" >&2
-	fi
-
-	testbus_group_finish SUCCESS
-}
-

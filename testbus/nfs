@@ -201,7 +201,6 @@ testbus_group_finish SUCCESS
 ##################################################################
 testbus_group_begin locking
 
-
 nfs_test_locking_setup
 nfs_test_all_versions nfs_test_locking
 
@@ -211,10 +210,7 @@ testbus_group_finish
 # Try some basic consistency tests when coming from two different
 # clients
 ##################################################################
-testbus_group_begin cto
-
-testbus_trace "Making sure grace period has expired"
-sleep 10
+testbus_group_begin coherence
 
 nfs_server_write_exports - <<EOF
 /srv/nfs/dir1	*(rw)
