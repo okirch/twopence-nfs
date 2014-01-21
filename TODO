@@ -1,14 +1,6 @@
 
-- Add tests using the nfs command from testbus-nfs-utils
-
-- Test NFS file locking
-
-- Introduce a second client, and run data coherence tests:
-   * close-to-open
-   * file locking and implied data write-out
-
 - Test NFS with Kerberos
-
 - Test NFSv4 id mapping
+- Test NFSv4 ACLs
 
 - Test intr and soft behavior
