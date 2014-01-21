@@ -41,6 +41,8 @@
 #include <stdint.h>
 #include <signal.h>
 #include <errno.h>
+#include <pwd.h>
+#include <grp.h>
 
 struct file_data {
 	char *		name;
@@ -66,6 +68,7 @@ static int	nfschmod(int argc, char **argv);
 static int	parse_size(const char *, size_t *);
 static int	parse_device(const char *, dev_t *);
 
+static void	change_user(const char *username, const char *groupname);
 static int	create_file(struct file_data *data, const char *name, int flags, size_t filesize);
 static int	open_existing_file(struct file_data *data, const char *name, int flags);
 static int	generate_file(struct file_data *data, const char *name, size_t filesize);
@@ -90,79 +93,175 @@ pad32(unsigned int count)
 int
 main(int argc, char **argv)
 {
-	int	res;
+	const char *	cmdname;
+	const char *	opt_user = NULL;
+	const char *	opt_group = NULL;
+	int		res;
+	int		c;
 
 	if (argc >= 2 && !strcmp(argv[1], "-q")) {
 		opt_quiet = 1;
 		argv++, argc--;
 	}
 
-	if (argc <= 1 || !strcmp(argv[1], "help")) {
+	while ((c = getopt(argc, argv, "+g:qu:")) != -1) {
+		switch (c) {
+		case 'g':
+			opt_group = optarg;
+			break;
+
+		case 'q':
+			opt_quiet = 1;
+			break;
+
+		case 'u':
+			opt_user = optarg;
+			break;
+
+		default:
+			fprintf(stderr, "Invalid option\n");
+			goto usage;
+		}
+	}
+
+	argv += optind;
+	argc -= optind;
+
+	if (argc <= 1 || !strcmp(argv[0], "help")) {
 usage:
 		fprintf(stderr,
 			"Usage:\n"
-			"nfs create-file file ...\n"
-			"nfs verify-file file ...\n"
-			"nfs create-special path ...\n"
-			"nfs lock [-bntx] file ...\n"
-			"nfs silly-rename file1 file2\n"
-			"nfs silly-unlink file1\n"
-			"nfs stat file ...\n"
-			"nfs statfs file ...\n"
-			"nfs statvfs file ...\n"
-			"nfs mmap [-c size] file ...\n"
-			"nfs coherence file\n"
-			"nfs chmod file ...\n"
-			"nfs mknod file ...\n"
+			"  nfs [options] <command> [args ...]\n"
+			"Valid options:\n"
+			"  -q   Be less verbose\n"
+			"  -u <user>\n"
+			"       Execute the test as the given user (can be either a user name or a uid)\n"
+			"       When a user name is given, this will also set the process gid and auxiliary gids\n"
+			"\nValid commands:\n"
+			"  nfs create-file file ...\n"
+			"  nfs verify-file file ...\n"
+			"  nfs create-special path ...\n"
+			"  nfs lock [-bntx] file ...\n"
+			"  nfs silly-rename file1 file2\n"
+			"  nfs silly-unlink file1\n"
+			"  nfs stat file ...\n"
+			"  nfs statfs file ...\n"
+			"  nfs statvfs file ...\n"
+			"  nfs mmap [-c size] file ...\n"
+			"  nfs coherence file\n"
+			"  nfs chmod file ...\n"
+			"  nfs mknod file ...\n"
 		       );
 		return 1;
 	}
-	argv++, argc--;
 
-	if (!strcmp(argv[0], "create-file")) {
+	if (opt_user || opt_group)
+		change_user(opt_user, opt_group);
+
+	cmdname = argv[0];
+	optind = 0;
+
+	if (!strcmp(cmdname, "create-file")) {
 		res = nfscreate(argc, argv);
 	} else
-	if (!strcmp(argv[0], "verify-file")) {
+	if (!strcmp(cmdname, "verify-file")) {
 		res = nfsverify(argc, argv);
 	} else
-	if (!strcmp(argv[0], "create-special")) {
+	if (!strcmp(cmdname, "create-special")) {
 		res = nfsmknod(argc, argv);
 	} else
-	if (!strcmp(argv[0], "lock")) {
+	if (!strcmp(cmdname, "lock")) {
 		res = nfslock(argc, argv);
 	} else
-	if (!strcmp(argv[0], "open")) {
+	if (!strcmp(cmdname, "open")) {
 		res = nfsopen(argc, argv);
 	} else
-	if (!strcmp(argv[0], "silly-rename")) {
+	if (!strcmp(cmdname, "silly-rename")) {
 		res = nfsrename(argc, argv);
 	} else
-	if (!strcmp(argv[0], "silly-unlink")) {
+	if (!strcmp(cmdname, "silly-unlink")) {
 		res = nfsunlink(argc, argv);
 	} else
-	if (!strcmp(argv[0], "stat")) {
+	if (!strcmp(cmdname, "stat")) {
 		res = nfsstat(argc, argv);
 	} else
-	if (!strcmp(argv[0], "statfs")) {
+	if (!strcmp(cmdname, "statfs")) {
 		res = nfsstatfs(argc, argv);
 	} else
-	if (!strcmp(argv[0], "statvfs")) {
+	if (!strcmp(cmdname, "statvfs")) {
 		res = nfsstatvfs(argc, argv);
 	} else
-	if (!strcmp(argv[0], "mmap")) {
+	if (!strcmp(cmdname, "mmap")) {
 		res = nfsmmap(argc, argv);
 	} else
-	if (!strcmp(argv[0], "coherence")
-	 || !strcmp(argv[0], "mmap2")) {
+	if (!strcmp(cmdname, "coherence")
+	 || !strcmp(cmdname, "mmap2")) {
 		res = nfslock_coherence(argc, argv);
 	} else
-	if (!strcmp(argv[0], "chmod")) {
+	if (!strcmp(cmdname, "chmod")) {
 		res = nfschmod(argc, argv);
 	} else {
 		fprintf(stderr, "Invalid command \"%s\"\n", argv[0]);
 		goto usage;
 	}
 	return res;
+}
+
+void
+change_user(const char *username, const char *groupname)
+{
+	char *end;
+	uid_t uid = -1;
+	gid_t gid = -1;
+	int aux_groups_set = 0;
+
+	if (username) {
+		uid = strtoul(username, &end, 0);
+		if (*end != '\0') {
+			struct passwd *pwd;
+
+			pwd = getpwnam(username);
+			if (pwd == NULL) {
+				fprintf(stderr, "%s: no such user\n", username);
+				exit(1);
+			}
+			if (initgroups(username, pwd->pw_gid) < 0) {
+				fprintf(stderr, "initgroups(%s): %m\n", username);
+				exit(1);
+			}
+			aux_groups_set = 1;
+			gid = pwd->pw_gid;
+			uid = pwd->pw_uid;
+		}
+	}
+	if (groupname) {
+		gid = strtoul(groupname, &end, 0);
+		if (*end != '\0') {
+			struct group *grp;
+
+			grp = getgrnam(groupname);
+			if (grp == NULL) {
+				fprintf(stderr, "%s: no such group\n", groupname);
+				exit(1);
+			}
+			gid = grp->gr_gid;
+		}
+	}
+
+	if (!aux_groups_set && setgroups(0, NULL) < 0) {
+		fprintf(stderr, "setgroups(0, NULL): %m\n");
+		exit(1);
+	}
+
+	if (gid != -1 && setgid(gid) < 0) {
+		fprintf(stderr, "setgid(%u): %m\n", gid);
+		exit(1);
+	}
+
+	if (uid != -1 && setuid(uid) < 0) {
+		fprintf(stderr, "setuid(%u): %m\n", uid);
+		exit(1);
+	}
 }
 
 int
