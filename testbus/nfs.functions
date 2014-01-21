@@ -86,44 +86,6 @@ function nfs_server_write_exports {
 }
 
 ##################################################################
-# Initialize an NFS client node
-# Usage:
-#   nfs_init_client $host_handle
-##################################################################
-function nfs_init_client {
-
-	local hh
-
-	hh=$1; shift
-
-	nfs_update_hosts $hh <<-EOF
-	$NFS_SERVER_IP	$NFS_SERVER_NAME nfs-server.testbus.opensuse.org
-	EOF
-
-	if ! testbus_run_command --host $hh /usr/sbin/showmount -e nfs-server.testbus.opensuse.org; then
-		testbus_test_failure "Unable to contact NFS server"
-		return 1
-	fi
-
-	if ! testbus_run_command --host $hh /bin/mkdir -p /mnt/nfs{1,2,3,4}; then
-		testbus_test_failure "Failed to set up NFS mount points"
-		return 1;
-	fi
-
-	# There's an icky issue with systemd and inssrv, which causes
-	# rpcbind not to be enabled automatically when you enable NFS
-	testbus_run_command --host $hh /sbin/rpcbind || true
-
-	# A simple start is not enough to make it start all helper services
-	if ! testbus_run_command --host $hh /etc/init.d/nfs force-start; then
-		testbus_test_failure "NFS start script exited with error"
-		return 1;
-	fi
-
-	return 0
-}
-
-##################################################################
 # Execute a shell function for a variety of NFS versions and
 # transports.
 # Invoke as
@@ -174,6 +136,7 @@ function nfs_mount_should_succeed {
 	fi
 
 	testbus_test_begin $testname
+	testbus_trace "Mounting $NFS_SERVER_IP:$server_dir should succeed"
 	if __nfs_run_client /bin/mount $NFS_SERVER_IP:$server_dir $client_dir $options; then
 		if ! __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
 			testbus_test_failure "Directory was not mounted (which is bad), but mount(8) reported success (which is even worse)"
@@ -205,6 +168,7 @@ function nfs_mount_should_fail {
 	fi
 
 	testbus_test_begin $testname
+	testbus_trace "Mounting $NFS_SERVER_IP:$server_dir should fail"
 	if __nfs_run_client /bin/mount $NFS_SERVER_IP:$server_dir $client_dir $options; then
 		if ! __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
 			testbus_test_failure "Directory was not mounted (which is good), but mount(8) reported success"
@@ -235,6 +199,9 @@ function nfs_test_mount {
 
 function nfs_test_readonly {
 
+	local server_dir client_dir
+	local t0 t1 delay
+
 	server_dir=$1
 	client_dir=$2
 
@@ -243,9 +210,19 @@ function nfs_test_readonly {
 
 	nfs_test_mount "$@" || return 1
 
+	t0=`date +%s`
+
 	__nfs_run_client /bin/touch $client_dir/readonly-test &&
 		testbus_test_failure "file system should be read-only, but succeeded in creating file"
 	nfs_run_client /bin/umount $client_dir
+
+	# We check how long this took, because a misconfigured/broken NFSv4 idmapping
+	# may cause significant delays on the first access.
+	t1=`date +%s`
+	let delay=$t1-$t0
+	if [ "$delay" -gt 5 ]; then
+		testbus_test_failure "Creating the file took too long ($delay seconds)"
+	fi
 
 	testbus_test_success
 }

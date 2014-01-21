@@ -1,224 +1,31 @@
 #!/bin/bash
 #
-# This is a draft idea of how headers for testbus scripts
-# could be used to drive the setup
-##################################################################
-# Start-Testbus-Requirements
-# Instances		2
-# Bridged-Network	yes
-# Instance-NICs		1
-# End-Testbus-Requirements
-##################################################################
+# This script is part of the testbus NFS suite
+#
+# Copyright (C) 2013-2014 Olaf Kirch <okir@suse.de>
+#
 
-USE_YAST=false
-
-# TESTBUS_SELFTEST_DEBUG=all
-
-. /usr/share/testbus/functions
-. $0.functions
-
-TMPDIR=/tmp/testbus-yp
-mkdir -p $TMPDIR
-
-# Override the timeout for claiming the host.
-# Bringing up a VM guest can take some time, especially if it goes
-# through a firstboot stage first.
-TESTBUS_CLAIM_TIMEOUT=240
-
-##################################################################
-# Start testing
-##################################################################
-testbus_group_begin $0
-
-NFS_SERVER=`testbus_claim_host --role server`
-test -n "$NFS_SERVER" || testbus_exit_fail "unable to claim NFS server"
-
-NFS_CLIENT=`testbus_claim_host --role client`
-test -n "$NFS_CLIENT" || testbus_exit_fail "unable to claim NFS client"
-
-NFS_SECOND=`testbus_claim_host --role client2`
-test -n "$NFS_SECOND" || testbus_exit_fail "unable to claim second NFS client"
-
-NFS_SERVER_IP=`testbus_getenv_nonempty $NFS_SERVER primary_ip`
-NFS_CLIENT_IP=`testbus_getenv_nonempty $NFS_CLIENT primary_ip`
-NFS_SECOND_IP=`testbus_getenv_nonempty $NFS_SECOND primary_ip`
-
-NFS_SERVER_NAME=`testbus_getenv_nonempty $NFS_SERVER hostname`
-NFS_CLIENT_NAME=`testbus_getenv_nonempty $NFS_CLIENT hostname`
-NFS_SECOND_NAME=`testbus_getenv_nonempty $NFS_SECOND hostname`
-
-cat <<EOF
-Claimed hosts
-Server:  $NFS_SERVER_NAME ($NFS_SERVER_IP)
-Client:  $NFS_CLIENT_NAME ($NFS_CLIENT_IP)
-Client:  $NFS_SECOND_NAME ($NFS_SECOND_IP)
-EOF
-
-##################################################################
-# Initialize NFS server
-##################################################################
-testbus_test_begin server-init
-
-testbus_trace "server: setting up NFS server"
-
-testbus_upload_file $NFS_SERVER - /etc/modprobe.d/90-testbus-nfs.conf <<-EOF
-	options lockd nlm_grace_period=10
-EOF
-
-# I would have loved to use yast2 for this, but right now it always
-# wants _at least_ a pipe on stdout, preferably a tty. If you make it
-# write to anything else, it'll just die quietly.
-if $USE_YAST; then
-	testbus_exit_failure "not implemented"
-else
-	# This is icky:
-	__nfs_run_server /sbin/rpcbind || true
-
-	nfs_run_server /bin/rm -rf /srv/nfs/dir{1,2,3,4}
-	nfs_run_server /bin/mkdir -p /srv/nfs/dir{1,2,3,4}
-	testbus_trace "server: starting nfs-server"
-	nfs_run_server /etc/init.d/nfsserver start
-	nfs_run_server /sbin/chkconfig nfsserver on
-fi
-
-testbus_trace "NLM grace period reported on the server"
-testbus_download_file $NFS_SERVER /etc/modprobe.d/90-testbus-nfs.conf -
-
-nfs_update_hosts $NFS_SERVER <<-EOF
-	$NFS_CLIENT_IP $NFS_CLIENT_NAME nfs-client.testbus.opensuse.org
-EOF
-
-##################################################################
-# Initialize NFS server
-##################################################################
-testbus_test_begin client-init
-
-nfs_init_client $NFS_CLIENT
-nfs_init_client $NFS_SECOND
-
-testbus_test_success
+. $0.init
 
 ##################################################################
 # Basic testing of NFS mounts
 ##################################################################
-testbus_group_begin mount-tests
-
-nfs_server_write_exports - <<EOF
-/srv/nfs/dir1	*(ro)
-/srv/nfs/dir2	*(rw,no_root_squash)
-/srv/nfs/dir3	*(rw)
-EOF
-
-testbus_test_begin byname
-nfs_run_client /bin/mount $NFS_SERVER_NAME:/srv/nfs/dir1 /mnt/nfs1
-nfs_run_client /bin/umount /mnt/nfs1
-
-nfs_mount_should_succeed byaddr			/srv/nfs/dir1	/mnt/nfs1
-nfs_mount_should_succeed nfsv2			/srv/nfs/dir1	/mnt/nfs1 vers=2
-nfs_mount_should_succeed nfsvers2		/srv/nfs/dir1	/mnt/nfs1 nfsvers=2
-nfs_mount_should_succeed nfsvers3		/srv/nfs/dir1	/mnt/nfs1 nfsvers=3
-nfs_mount_should_succeed nfsvers2-nolock	/srv/nfs/dir1	/mnt/nfs1 nfsvers=2,nolock
-nfs_mount_should_succeed nfsvers3-nolock	/srv/nfs/dir1	/mnt/nfs1 nfsvers=3,nolock
-nfs_mount_should_succeed nfsvers2-tcp		/srv/nfs/dir1	/mnt/nfs1 nfsvers=2,tcp
-nfs_mount_should_succeed nfsvers3-tcp		/srv/nfs/dir1	/mnt/nfs1 nfsvers=3,tcp
-nfs_mount_should_succeed nfsvers2-udp		/srv/nfs/dir1	/mnt/nfs1 nfsvers=2,udp
-nfs_mount_should_succeed nfsvers3-udp		/srv/nfs/dir1	/mnt/nfs1 nfsvers=3,udp
-
-testbus_group_begin non-exported
-nfs_mount_should_fail unexported		/srv/nfs/dir4	/mnt/nfs4
-
-# These are "exported" for the NFSv4 virtual file handle space,
-# but should these really be available to NFSv2/v3 clients as well?
-#
-# -- disabled for now. --okir, 2014-01-14
-#nfs_mount_should_fail nfsv4-fhspace1		/srv/nfs	/mnt/nfs4
-#nfs_mount_should_fail nfsv4-fhspace2		/srv		/mnt/nfs4
-testbus_group_finish SUCCESS
-
-testbus_group_finish SUCCESS
-
+$0.mount
 
 ##################################################################
-# Verify that ro/rw and root_squash flags work as expected
+# Test export handling
 ##################################################################
-testbus_group_begin export-flags
-
-nfs_test_export_flags_setup
-
-nfs_test_all_versions nfs_test_export_flags
-
-testbus_group_finish SUCCESS
-
-
-##################################################################
-# Test ip net/mask matching in exports
-##################################################################
-testbus_group_begin netmask-exports
-
-nfs_server_write_exports - <<EOF
-/srv/nfs/dir1	*(ro)
-/srv/nfs/dir1	10.0.0.0/8(rw,no_root_squash)
-EOF
-
-nfs_test_norootsquash /srv/nfs/dir1 /mnt/nfs1
-
-# And now the other way around
-nfs_server_write_exports - <<EOF
-/srv/nfs/dir1	10.0.0.0/8(ro) *(rw,no_root_squash)
-EOF
-
-nfs_test_readonly /srv/nfs/dir1 /mnt/nfs1
-
-testbus_group_finish SUCCESS
-
-##################################################################
-# Test domain matching
-##################################################################
-testbus_group_begin domain-wildcard
-
-nfs_server_write_exports - <<EOF
-/srv/nfs/dir1	*(ro)
-/srv/nfs/dir1	*.testbus.opensuse.org(rw,no_root_squash)
-EOF
-
-nfs_test_norootsquash /srv/nfs/dir1 /mnt/nfs1
-
-testbus_group_finish SUCCESS
+$0.export
 
 ##################################################################
 # Run a standard set of tests exercising different operations
 # of the NFS protocol, for each NFS protocol version
 ##################################################################
-testbus_group_begin fileops
-
-nfs_test_fileops_setup
-nfs_test_all_versions nfs_test_fileops
-
-testbus_group_finish SUCCESS
+$0.fileops
 
 ##################################################################
-# Try some basic file locking tests
+# Data consistency and locking
 ##################################################################
-testbus_group_begin locking
-
-nfs_test_locking_setup
-nfs_test_all_versions nfs_test_locking
-
-testbus_group_finish
-
-##################################################################
-# Try some basic consistency tests when coming from two different
-# clients
-##################################################################
-testbus_group_begin coherence
-
-nfs_server_write_exports - <<EOF
-/srv/nfs/dir1	*(rw)
-EOF
-
-nfs_test_coherence_setup
-nfs_test_all_versions nfs_test_coherence
-
-testbus_group_finish SUCCESS
+$0.coherence
 
 testbus_exit

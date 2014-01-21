@@ -1,0 +1,146 @@
+#!/bin/bash
+#
+# This script is part of the testbus NFS suite
+#
+# Copyright (C) 2013-2014 Olaf Kirch <okir@suse.de>
+#
+
+USE_YAST=false
+
+# TESTBUS_SELFTEST_DEBUG=most
+
+# Override the timeout for claiming the host.
+# Bringing up a VM guest can take some time, especially if it goes
+# through a firstboot stage first.
+TESTBUS_CLAIM_TIMEOUT=240
+
+
+##################################################################
+# Start testing
+##################################################################
+function nfs_init_claim_nodes {
+
+	NFS_SERVER=`testbus_claim_host --role server`
+	test -n "$NFS_SERVER" || testbus_exit_fail "unable to claim NFS server"
+
+	NFS_CLIENT=`testbus_claim_host --role client`
+	test -n "$NFS_CLIENT" || testbus_exit_fail "unable to claim NFS client"
+
+	NFS_SECOND=`testbus_claim_host --role client2`
+	test -n "$NFS_SECOND" || testbus_exit_fail "unable to claim second NFS client"
+
+	NFS_SERVER_IP=`testbus_getenv_nonempty $NFS_SERVER primary_ip`
+	NFS_CLIENT_IP=`testbus_getenv_nonempty $NFS_CLIENT primary_ip`
+	NFS_SECOND_IP=`testbus_getenv_nonempty $NFS_SECOND primary_ip`
+
+	NFS_SERVER_NAME=`testbus_getenv_nonempty $NFS_SERVER hostname`
+	NFS_CLIENT_NAME=`testbus_getenv_nonempty $NFS_CLIENT hostname`
+	NFS_SECOND_NAME=`testbus_getenv_nonempty $NFS_SECOND hostname`
+
+	cat <<-EOF
+	Claimed hosts
+	Server:  $NFS_SERVER_NAME ($NFS_SERVER_IP)
+	Client:  $NFS_CLIENT_NAME ($NFS_CLIENT_IP)
+	Client:  $NFS_SECOND_NAME ($NFS_SECOND_IP)
+	EOF
+
+}
+
+##################################################################
+# Initialize NFS server
+##################################################################
+function nfs_init_server {
+
+	testbus_test_begin server-init
+
+	testbus_trace "server: setting up NFS server"
+
+	testbus_upload_file $NFS_SERVER - /etc/modprobe.d/90-testbus-nfs.conf <<-EOF
+		options lockd nlm_grace_period=10
+	EOF
+
+	# I would have loved to use yast2 for this, but so far I couldn't
+	# make it work.
+	if $USE_YAST; then
+		testbus_exit_failure "not implemented"
+	else
+		# This is icky:
+		__nfs_run_server /sbin/rpcbind || true
+
+		nfs_run_server /bin/rm -rf /srv/nfs/dir{1,2,3,4}
+		nfs_run_server /bin/mkdir -p /srv/nfs/dir{1,2,3,4}
+		testbus_trace "server: starting nfs-server"
+		nfs_run_server /etc/init.d/nfsserver start
+		nfs_run_server /sbin/chkconfig nfsserver on
+	fi
+
+	testbus_trace "NLM grace period reported on the server"
+	testbus_download_file $NFS_SERVER /etc/modprobe.d/90-testbus-nfs.conf -
+
+	nfs_update_hosts $NFS_SERVER <<-EOF
+		$NFS_CLIENT_IP $NFS_CLIENT_NAME client1.testbus.opensuse.org
+		$NFS_SECOND_IP $NFS_SECOND_NAME client2.testbus.opensuse.org
+	EOF
+}
+
+##################################################################
+# Initialize an NFS client node
+# Usage:
+#   nfs_init_client $host_handle
+##################################################################
+function nfs_init_client {
+
+	local hh
+
+	hh=$1; shift
+
+	nfs_update_hosts $hh <<-EOF
+	$NFS_SERVER_IP	$NFS_SERVER_NAME nfs-server.testbus.opensuse.org
+	EOF
+
+	if ! testbus_run_command --host $hh /usr/sbin/showmount -e nfs-server.testbus.opensuse.org; then
+		testbus_test_failure "Unable to contact NFS server"
+		return 1
+	fi
+
+	if ! testbus_run_command --host $hh /bin/mkdir -p /mnt/nfs{1,2,3,4}; then
+		testbus_test_failure "Failed to set up NFS mount points"
+		return 1;
+	fi
+
+	# There's an icky issue with systemd and inssrv, which causes
+	# rpcbind not to be enabled automatically when you enable NFS
+	testbus_run_command --host $hh /sbin/rpcbind || true
+
+	# A simple start is not enough to make it start all helper services
+	if ! testbus_run_command --host $hh /etc/init.d/nfs force-start; then
+		testbus_test_failure "NFS start script exited with error"
+		return 1;
+	fi
+
+	return 0
+}
+
+
+##################################################################
+# Overall NFS initialization
+##################################################################
+if [ -z "$__NFS_INITIALIZED" ]; then
+
+	. /usr/share/testbus/functions
+	. ${0%/*}/nfs.functions
+
+	testbus_group_begin nfs
+
+	nfs_init_claim_nodes
+
+	nfs_init_server
+
+	testbus_test_begin client-init
+	nfs_init_client $NFS_CLIENT
+	nfs_init_client $NFS_SECOND
+	testbus_test_success
+
+	__NFS_INITIALIZED=true
+fi
+

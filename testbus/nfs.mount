@@ -1,0 +1,48 @@
+#!/bin/bash
+#
+# This script is part of the testbus NFS suite
+#
+# Copyright (C) 2013-2014 Olaf Kirch <okir@suse.de>
+#
+
+. ${0%/*}/nfs.init
+
+##################################################################
+# Basic testing of NFS mounts
+##################################################################
+testbus_group_begin mount-tests
+
+nfs_server_write_exports - <<EOF
+/srv/nfs/dir1	*(ro)
+/srv/nfs/dir2	*(rw,no_root_squash)
+/srv/nfs/dir3	*(rw)
+EOF
+
+testbus_test_begin byname
+nfs_run_client /bin/mount $NFS_SERVER_NAME:/srv/nfs/dir1 /mnt/nfs1
+nfs_run_client /bin/umount /mnt/nfs1
+
+nfs_mount_should_succeed byaddr			/srv/nfs/dir1	/mnt/nfs1
+nfs_mount_should_succeed nfsv2			/srv/nfs/dir1	/mnt/nfs1 vers=2
+nfs_mount_should_succeed nfsvers2		/srv/nfs/dir1	/mnt/nfs1 nfsvers=2
+nfs_mount_should_succeed nfsvers3		/srv/nfs/dir1	/mnt/nfs1 nfsvers=3
+nfs_mount_should_succeed nfsvers2-nolock	/srv/nfs/dir1	/mnt/nfs1 nfsvers=2,nolock
+nfs_mount_should_succeed nfsvers3-nolock	/srv/nfs/dir1	/mnt/nfs1 nfsvers=3,nolock
+nfs_mount_should_succeed nfsvers2-tcp		/srv/nfs/dir1	/mnt/nfs1 nfsvers=2,tcp
+nfs_mount_should_succeed nfsvers3-tcp		/srv/nfs/dir1	/mnt/nfs1 nfsvers=3,tcp
+nfs_mount_should_succeed nfsvers2-udp		/srv/nfs/dir1	/mnt/nfs1 nfsvers=2,udp
+nfs_mount_should_succeed nfsvers3-udp		/srv/nfs/dir1	/mnt/nfs1 nfsvers=3,udp
+
+testbus_group_begin non-exported
+nfs_mount_should_fail unexported		/srv/nfs/dir4	/mnt/nfs4
+
+# These are "exported" for the NFSv4 virtual file handle space,
+# but should these really be available to NFSv2/v3 clients as well?
+#
+# -- disabled for now. --okir, 2014-01-14
+#nfs_mount_should_fail nfsv4-fhspace1		/srv/nfs	/mnt/nfs4
+#nfs_mount_should_fail nfsv4-fhspace2		/srv		/mnt/nfs4
+testbus_group_finish SUCCESS
+
+testbus_group_finish SUCCESS
+
