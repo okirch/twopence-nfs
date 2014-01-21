@@ -949,6 +949,7 @@ function nfs_test_cto {
 function __nfs_test_lock_coherence {
 
 	local dir tf
+	local cmdh
 
 	dir=$1; shift
 	tf=$dir/testfile
@@ -959,18 +960,23 @@ function __nfs_test_lock_coherence {
 	__nfs_run client2 /usr/sbin/rpcdebug -m nlm all
 
 	# On client1, start the mmap challenger
-	# FIXME: there should be a better way to run a command in the background
-	__nfs_run client1 $NFS_TOOL mmap2 -t $timeout -w 500 "$@" $tf &
+	cmdh=`__nfs_run client1 --nowait $NFS_TOOL mmap2 -t $timeout -w 500 "$@" $tf`
+	if [ -z "$cmdh" ]; then
+		testbus_test_failure "unable to start command"
+		__nfs_run client2 /usr/sbin/rpcdebug -m nlm -c all
+		return 1
+	fi
 
 	# The challenger create the test file, then locks it
 	# (it should really create a temp file, lock it, then move it to the
 	# final path).
-	echo -n "Waiting for challenger to start"
+	testbus_trace "Waiting for challenger to start"
 	for n in `seq 1 10`; do
 		if __nfs_run client1 /usr/bin/test -f $tf; then
+			testbus_trace "ready"
 			break;
 		fi
-		echo -n "."
+		testbus_trace "snore..."
 		sleep 1
 	done
 
@@ -988,7 +994,7 @@ function __nfs_test_lock_coherence {
 	fi
 
 	# wait for challenger
-	if ! wait; then
+	if ! testbus_wait_command $cmdh; then
 		testbus_test_failure "challenger exited with error"
 	fi
 
