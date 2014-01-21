@@ -726,17 +726,28 @@ function nfs_test_posix_lock4 {
 
 function nfs_test_posix_lock5 {
 
+	local dir tf
+	local cmdh
+
 	dir=$1; shift
 	tf=$dir/testfile
 
 	testbus_test_begin posix-lock5
 	testbus_trace "Grab shared POSIX locks on two clients"
-	nfs_run client1 $NFS_TOOL lock -t 5 $tf &
+
+	cmdh=`__nfs_run client1 --nowait $NFS_TOOL lock -t 5 $tf`
+	if [ -z "$cmdh" ]; then
+		testbus_test_failure "unable to start command"
+		return 1
+	fi
+
+	sleep 1
+
 	if ! nfs_run client2 --timeout 5 $NFS_TOOL lock -t 1 $tf; then
 		testbus_test_failure "Failed to grab shared lock on second client"
 	fi
 
-	if ! wait; then
+	if ! testbus_wait_command $cmdh; then
 		testbus_test_failure "Failed to grab shared lock on first client"
 	fi
 
@@ -746,12 +757,21 @@ function nfs_test_posix_lock5 {
 
 function nfs_test_posix_lock6 {
 
+	local dir tf
+	local cmdh
+
 	dir=$1; shift
 	tf=$dir/testfile
 
 	testbus_test_begin posix-lock6
 	testbus_trace "Grab exclusive POSIX lock one first client"
-	nfs_run client1 $NFS_TOOL lock -t 10 -x $tf &
+
+	cmdh=`__nfs_run client1 --nowait $NFS_TOOL lock -t 10 -x $tf`
+	if [ -z "$cmdh" ]; then
+		testbus_test_failure "unable to start command"
+		return 1
+	fi
+
 	sleep 1
 
 	testbus_trace "Try to grab shared lock on second client, nonblocking - this should fail"
@@ -766,7 +786,7 @@ function nfs_test_posix_lock6 {
 		testbus_test_failure "Blocking lock never acquired"
 	fi
 
-	if ! wait; then
+	if ! testbus_wait_command $cmdh; then
 		testbus_test_failure "Failed to grab shared lock on first client"
 	fi
 
@@ -779,6 +799,8 @@ function nfs_test_posix_lock6 {
 }
 
 function nfs_test_flock1 {
+
+	local dir tf
 
 	dir=$1; shift
 	tf=$dir/testfile
@@ -804,19 +826,28 @@ function nfs_test_flock2 {
 
 function nfs_test_flock3 {
 
+	local dir tf
+	local cmdh
+
 	dir=$1; shift
 	tf=$dir/testfile
 
 	testbus_test_begin flock3
 	testbus_trace "Grab shared flock locks on two clients"
-	nfs_run client1 $NFS_TOOL lock -t 5 -b $tf &
+
+	cmdh=`__nfs_run client1 --nowait $NFS_TOOL lock -t 5 -b $tf`
+	if [ -z "$cmdh" ]; then
+		testbus_test_failure "unable to start command"
+		return 1
+	fi
+
 	sleep 1
 
 	if ! __nfs_run client2 --timeout 5 $NFS_TOOL lock -t 1 -b $tf; then
 		testbus_test_failure "Failed to grab shared lock on second client"
 	fi
 
-	if ! wait; then
+	if ! testbus_wait_command $cmdh; then
 		testbus_test_failure "Failed to grab shared lock on first client"
 	fi
 
