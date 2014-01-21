@@ -65,13 +65,13 @@ function nfs_init_server {
 		testbus_exit_failure "not implemented"
 	else
 		# This is icky:
-		__nfs_run_server /sbin/rpcbind || true
+		__nfs_run server /sbin/rpcbind || true
 
-		nfs_run_server /bin/rm -rf /srv/nfs/dir{1,2,3,4}
-		nfs_run_server /bin/mkdir -p /srv/nfs/dir{1,2,3,4}
+		nfs_run server /bin/rm -rf /srv/nfs/dir{1,2,3,4}
+		nfs_run server /bin/mkdir -p /srv/nfs/dir{1,2,3,4}
 		testbus_trace "server: starting nfs-server"
-		nfs_run_server /etc/init.d/nfsserver start
-		nfs_run_server /sbin/chkconfig nfsserver on
+		nfs_run server /etc/init.d/nfsserver start
+		nfs_run server /sbin/chkconfig nfsserver on
 	fi
 
 	testbus_trace "NLM grace period reported on the server"
@@ -86,34 +86,41 @@ function nfs_init_server {
 ##################################################################
 # Initialize an NFS client node
 # Usage:
-#   nfs_init_client $host_handle
+#   nfs_init_client $nickname
+# The nickname should be "client1" or "client2"
 ##################################################################
 function nfs_init_client {
 
-	local hh
+	local hostnick handle
 
-	hh=$1; shift
+	hostnick=$1; shift
 
-	nfs_update_hosts $hh <<-EOF
+	handle=`__nfs_host_handle $hostnick`
+	if [ -z "$handle" ]; then
+		testbus_test_failure "No handle for host $hostnick"
+		return 1
+	fi
+
+	nfs_update_hosts $handle <<-EOF
 	$NFS_SERVER_IP	$NFS_SERVER_NAME nfs-server.testbus.opensuse.org
 	EOF
 
-	if ! testbus_run_command --host $hh /usr/sbin/showmount -e nfs-server.testbus.opensuse.org; then
+	if ! __nfs_run $hostnick /usr/sbin/showmount -e nfs-server.testbus.opensuse.org; then
 		testbus_test_failure "Unable to contact NFS server"
 		return 1
 	fi
 
-	if ! testbus_run_command --host $hh /bin/mkdir -p /mnt/nfs{1,2,3,4}; then
+	if ! __nfs_run $hostnick /bin/mkdir -p /mnt/nfs{1,2,3,4}; then
 		testbus_test_failure "Failed to set up NFS mount points"
 		return 1;
 	fi
 
 	# There's an icky issue with systemd and inssrv, which causes
 	# rpcbind not to be enabled automatically when you enable NFS
-	testbus_run_command --host $hh /sbin/rpcbind || true
+	__nfs_run $hostnick /sbin/rpcbind || true
 
 	# A simple start is not enough to make it start all helper services
-	if ! testbus_run_command --host $hh /etc/init.d/nfs force-start; then
+	if ! __nfs_run $hostnick /etc/init.d/nfs force-start; then
 		testbus_test_failure "NFS start script exited with error"
 		return 1;
 	fi
@@ -137,8 +144,8 @@ if [ -z "$__NFS_INITIALIZED" ]; then
 	nfs_init_server
 
 	testbus_test_begin client-init
-	nfs_init_client $NFS_CLIENT
-	nfs_init_client $NFS_SECOND
+	nfs_init_client client1
+	nfs_init_client client2
 	testbus_test_success
 
 	__NFS_INITIALIZED=true

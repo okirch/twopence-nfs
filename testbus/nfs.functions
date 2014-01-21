@@ -1,4 +1,119 @@
 
+function __nfs_host_handle {
+
+	local host result
+
+	host=$1; shift
+
+	case $host in
+	server)
+		result=$NFS_SERVER;;
+	client|client1)
+		result=$NFS_CLIENT;;
+	client2)
+		result=$NFS_SECOND;;
+	*)
+		echo "$FUNCNAME: do not know host handle $host" >&2
+		return 1
+	esac
+
+	if [ -z "$result" ]; then
+		echo "$FUNCNAME: $host not configured" >&2
+		return 1
+	fi
+
+	echo $result
+	return 0
+}
+
+function __nfs_host_name {
+
+	local host result
+
+	host=$1; shift
+
+	case $host in
+	server)
+		result=$NFS_SERVER_NAME;;
+	client|client1)
+		result=$NFS_CLIENT_NAME;;
+	client2)
+		result=$NFS_SECOND_NAME;;
+	*)
+		echo "$FUNCNAME: do not know host handle $host" >&2
+		return 1
+	esac
+
+	if [ -z "$result" ]; then
+		echo "$FUNCNAME: $host not configured" >&2
+		return 1
+	fi
+
+	echo $result
+	return 0
+}
+
+function __nfs_host_ipaddr {
+
+	local host result
+
+	host=$1; shift
+
+	case $host in
+	server)
+		result=$NFS_SERVER_IP;;
+	client|client1)
+		result=$NFS_CLIENT_IP;;
+	client2)
+		result=$NFS_SECOND_IP;;
+	*)
+		result="$FUNCNAME: do not know host handle $host" >&2
+		return 1
+	esac
+
+	if [ -z "$result" ]; then
+		echo "$FUNCNAME: $host not configured" >&2
+		return 1
+	fi
+
+	echo $result
+	return 0
+}
+
+function __nfs_run {
+
+	local host result
+
+	host=$1; shift
+	case $host in
+	server)
+		result=$NFS_SERVER;;
+	client|client1)
+		result=$NFS_CLIENT;;
+	client2)
+		result=$NFS_SECOND;;
+	*)
+		echo "$FUNCNAME: do not know host handle $host" >&2
+		return 1
+	esac
+
+	if [ -z "$result" ]; then
+		echo "$FUNCNAME: $host not configured" >&2
+		return 1
+	fi
+
+	testbus_run_command --host $result "$@"
+}
+
+function nfs_run {
+
+	if !  __nfs_run "$@"; then
+		testbus_test_failure "Command exited with error"
+		return 1;
+	fi
+	return 0
+}
+
 function __nfs_run_client {
 	testbus_run_command --host $NFS_CLIENT "$@"
 }
@@ -42,7 +157,7 @@ function nfs_run_second {
 }
 
 function run_second_script {
-	nfs_run_client --host $NFS_SECOND --send-script "$@"
+	nfs_run client2 --host $NFS_SECOND --send-script "$@"
 }
 
 ##################################################################
@@ -76,13 +191,13 @@ function nfs_update_hosts {
 function nfs_server_write_exports {
 
 	testbus_upload_file $NFS_SERVER "$@" /etc/exports
-	nfs_run_server /etc/init.d/nfsserver reload
+	nfs_run server /etc/init.d/nfsserver reload
 
 	echo "exports file now:"
 	testbus_download_file $NFS_SERVER /etc/exports -
 
 	echo "visible on client side:"
-	nfs_run_client /usr/sbin/showmount -e $NFS_SERVER_IP
+	nfs_run client /usr/sbin/showmount -e $NFS_SERVER_IP
 }
 
 ##################################################################
@@ -137,20 +252,20 @@ function nfs_mount_should_succeed {
 
 	testbus_test_begin $testname
 	testbus_trace "Mounting $NFS_SERVER_IP:$server_dir should succeed"
-	if __nfs_run_client /bin/mount $NFS_SERVER_IP:$server_dir $client_dir $options; then
-		if ! __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
+	if __nfs_run client /bin/mount $NFS_SERVER_IP:$server_dir $client_dir $options; then
+		if ! __nfs_run client /bin/grep " $client_dir" /proc/mounts; then
 			testbus_test_failure "Directory was not mounted (which is bad), but mount(8) reported success (which is even worse)"
 		else
 			testbus_test_success
 		fi
 	else
-		if __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
+		if __nfs_run client /bin/grep " $client_dir" /proc/mounts; then
 			testbus_test_failure "Directory was mounted (which is good), but mount(8) reported an error"
 		else
 			testbus_test_failure "This mount attempt should have succeeded"
 		fi
 	fi
-	nfs_run_client /bin/umount $client_dir
+	nfs_run client /bin/umount $client_dir
 }
 
 function nfs_mount_should_fail {
@@ -169,20 +284,20 @@ function nfs_mount_should_fail {
 
 	testbus_test_begin $testname
 	testbus_trace "Mounting $NFS_SERVER_IP:$server_dir should fail"
-	if __nfs_run_client /bin/mount $NFS_SERVER_IP:$server_dir $client_dir $options; then
-		if ! __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
+	if __nfs_run client /bin/mount $NFS_SERVER_IP:$server_dir $client_dir $options; then
+		if ! __nfs_run client /bin/grep " $client_dir" /proc/mounts; then
 			testbus_test_failure "Directory was not mounted (which is good), but mount(8) reported success"
 		else
 			testbus_test_failure "This mount attempt should have failed"
 		fi
 	else
-		if __nfs_run_client /bin/grep " $client_dir" /proc/mounts; then
+		if __nfs_run client /bin/grep " $client_dir" /proc/mounts; then
 			testbus_test_failure "Directory was mounted (which is bad), even though mount(8) reported an error"
 		else
 			testbus_test_success
 		fi
 	fi
-	nfs_run_client /bin/umount $client_dir
+	nfs_run client /bin/umount $client_dir
 }
 
 ##################################################################
@@ -194,7 +309,7 @@ function nfs_test_mount {
 	client_dir=$2
 	shift 2
 
-	nfs_run_client /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir "$@"
+	nfs_run client /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir "$@"
 }
 
 function nfs_test_readonly {
@@ -206,15 +321,15 @@ function nfs_test_readonly {
 	client_dir=$2
 
 	testbus_test_begin readonly
-	nfs_run_server /bin/rm -f $server_dir/readonly-test
+	nfs_run server /bin/rm -f $server_dir/readonly-test
 
 	nfs_test_mount "$@" || return 1
 
 	t0=`date +%s`
 
-	__nfs_run_client /bin/touch $client_dir/readonly-test &&
+	__nfs_run client /bin/touch $client_dir/readonly-test &&
 		testbus_test_failure "file system should be read-only, but succeeded in creating file"
-	nfs_run_client /bin/umount $client_dir
+	nfs_run client /bin/umount $client_dir
 
 	# We check how long this took, because a misconfigured/broken NFSv4 idmapping
 	# may cause significant delays on the first access.
@@ -233,13 +348,13 @@ function nfs_test_readwrite {
 	client_dir=$2
 
 	testbus_test_begin readwrite
-	nfs_run_server /bin/rm -f $server_dir/readwrite-test
+	nfs_run server /bin/rm -f $server_dir/readwrite-test
 
 	nfs_test_mount "$@" || return 1
 
-	__nfs_run_client /bin/touch $client_dir/readwrite-test ||
+	__nfs_run client /bin/touch $client_dir/readwrite-test ||
 		testbus_test_failure "file system should be read-write, but was unable to create the file"
-	nfs_run_client /bin/umount $client_dir
+	nfs_run client /bin/umount $client_dir
 
 	testbus_test_success
 }
@@ -256,20 +371,20 @@ function __nfs_test_rootsquash {
 	file=any/rootsquash-test
 
 	testbus_test_begin $testname
-	nfs_run_server /bin/mkdir -m 01777 -p $server_dir/any
-	nfs_run_server /bin/rm -f $server_dir/$file
+	nfs_run server /bin/mkdir -m 01777 -p $server_dir/any
+	nfs_run server /bin/rm -f $server_dir/$file
 
 	nfs_test_mount $server_dir $client_dir "$@" || return 1
 
-	if nfs_run_client /bin/touch $client_dir/$file; then
-		owner=`__nfs_run_client /bin/stat -c %%u $client_dir/$file`
+	if nfs_run client /bin/touch $client_dir/$file; then
+		owner=`__nfs_run client /bin/stat -c %%u $client_dir/$file`
 		if [ $? -ne 0 ]; then
 			testbus_test_failure "failed to run stat command on client"
 		elif [ "$owner" -ne $squash_id ]; then
 			testbus_test_failure "file system should have root-squashing enabled. new file has owner uid=\"$owner\" (expected $squash_id)"
 		fi
 	fi
-	nfs_run_client /bin/umount $client_dir
+	nfs_run client /bin/umount $client_dir
 
 	testbus_test_success
 }
@@ -296,19 +411,19 @@ function nfs_test_norootsquash {
 	client_dir=$2
 
 	testbus_test_begin norootsquash
-	nfs_run_server /bin/rm -f $server_dir/rootsquash-test
+	nfs_run server /bin/rm -f $server_dir/rootsquash-test
 
 	nfs_test_mount "$@" || return 1
 
-	if nfs_run_client /bin/touch $client_dir/rootsquash-test; then
-		owner=`__nfs_run_client /bin/stat -c %%u $client_dir/rootsquash-test`
+	if nfs_run client /bin/touch $client_dir/rootsquash-test; then
+		owner=`__nfs_run client /bin/stat -c %%u $client_dir/rootsquash-test`
 		if [ $? -ne 0 ]; then
 			testbus_test_failure "failed to run stat command on client"
 		elif [ "$owner" -ne 0 ]; then
 			testbus_test_failure "file system should have no root-squashing enabled. new file has owner uid=\"$owner\""
 		fi
 	fi
-	nfs_run_client /bin/umount $client_dir
+	nfs_run client /bin/umount $client_dir
 
 	testbus_test_success
 }
@@ -344,18 +459,18 @@ function nfs_test_createfile {
 	tf=$dir/testfile
 
 	testbus_test_begin create
-	nfs_run_client $NFS_TOOL create-file $tf
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client $NFS_TOOL create-file $tf
+	__nfs_run client /bin/rm -f $tf
 	testbus_test_success
 
 	testbus_test_begin create-excl
 	# The first create with O_EXCL should succeed, the second one should fail
-	nfs_run_client $NFS_TOOL create-file -x $tf
-	if __nfs_run_client $NFS_TOOL create-file -x $tf; then
-		__nfs_run_client /bin/rm -f $tf
+	nfs_run client $NFS_TOOL create-file -x $tf
+	if __nfs_run client $NFS_TOOL create-file -x $tf; then
+		__nfs_run client /bin/rm -f $tf
 		testbus_test_failure "file creation with O_EXCL succeeded, even though the file exists already"
 	else
-		__nfs_run_client /bin/rm -f $tf
+		__nfs_run client /bin/rm -f $tf
 		testbus_test_success
 	fi
 }
@@ -366,8 +481,8 @@ function nfs_test_writefile {
 	tf=$dir/testfile
 
 	testbus_test_begin writefile
-	nfs_run_client /bin/dd if=/dev/zero of=$tf bs=1k count=4k
-	nfs_run_client /bin/rm -f $tf
+	nfs_run client /bin/dd if=/dev/zero of=$tf bs=1k count=4k
+	nfs_run client /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -377,9 +492,9 @@ function nfs_test_chown {
 	tf=$dir/testfile
 
 	testbus_test_begin chown
-	nfs_run_client /bin/touch $tf
-	nfs_run_client /bin/chown --changes nobody $tf
-	nfs_run_client /bin/rm -f $tf
+	nfs_run client /bin/touch $tf
+	nfs_run client /bin/chown --changes nobody $tf
+	nfs_run client /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -389,9 +504,9 @@ function nfs_test_chmod {
 	tf=$dir/testfile
 
 	testbus_test_begin chmod
-	nfs_run_client /bin/touch $tf
-	nfs_run_client /bin/chmod --changes 0600 $tf
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client /bin/touch $tf
+	nfs_run client /bin/chmod --changes 0600 $tf
+	__nfs_run client /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -403,14 +518,14 @@ function nfs_test_silly_rename {
 
 	# Open dst, rename src to dst, verify both files
 	testbus_test_begin silly-rename
-	nfs_run_client $NFS_TOOL silly-rename $src $dst
-	__nfs_run_client /bin/rm -f $src $dst
+	nfs_run client $NFS_TOOL silly-rename $src $dst
+	__nfs_run client /bin/rm -f $src $dst
 	testbus_test_success
 
 	# Open src and dst, rename src to dst, verify both files
 	testbus_test_begin silly-rename2
-	nfs_run_client $NFS_TOOL silly-rename -x $src $dst
-	__nfs_run_client /bin/rm -f $src $dst
+	nfs_run client $NFS_TOOL silly-rename -x $src $dst
+	__nfs_run client /bin/rm -f $src $dst
 	testbus_test_success
 }
 
@@ -421,8 +536,8 @@ function nfs_test_silly_unlink {
 
 	# Open tf, unlink it, verify content
 	testbus_test_begin silly-unlink
-	nfs_run_client $NFS_TOOL silly-unlink $tf
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client $NFS_TOOL silly-unlink $tf
+	__nfs_run client /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -432,8 +547,8 @@ function nfs_test_socket {
 	tf=$dir/mysock
 
 	testbus_test_begin socket
-	nfs_run_client $NFS_TOOL create-special -t socket $tf -m 0644
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client $NFS_TOOL create-special -t socket $tf -m 0644
+	__nfs_run client /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -443,8 +558,8 @@ function nfs_test_fifo {
 	tf=$dir/myfifo
 
 	testbus_test_begin fifo
-	nfs_run_client $NFS_TOOL create-special -t fifo $tf -m 0644
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client $NFS_TOOL create-special -t fifo $tf -m 0644
+	__nfs_run client /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -454,8 +569,8 @@ function nfs_test_chrdev {
 	tf=$dir/devnull
 
 	testbus_test_begin chrdev
-	nfs_run_client $NFS_TOOL create-special -t chrdev $tf -m 0644 -d 1:3
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client $NFS_TOOL create-special -t chrdev $tf -m 0644 -d 1:3
+	__nfs_run client /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -465,8 +580,8 @@ function nfs_test_blkdev {
 	tf=$dir/devloop
 
 	testbus_test_begin blkdev
-	nfs_run_client $NFS_TOOL create-special -t blkdev $tf -m 0600 -d 7:0
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client $NFS_TOOL create-special -t blkdev $tf -m 0600 -d 7:0
+	__nfs_run client /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -478,22 +593,22 @@ function nfs_test_hardlink {
 	basename=${target##*/}
 
 	testbus_test_begin hardlink
-	nfs_run_client --send-stdin /bin/bash <<-EOF
+	nfs_run client --send-stdin /bin/bash <<-EOF
 		echo imadoofus >$target
 	EOF
-	nfs_run_client /bin/ln $target $link
-	content=`nfs_run_client /bin/cat $link`
+	nfs_run client /bin/ln $target $link
+	content=`nfs_run client /bin/cat $link`
 
 	if [ "$content" != "imadoofus" ]; then
 		testbus_test_failure "Problem reading hardlink"
 	else
 		testbus_trace "Trying to create the same hardlink twice is supposed to produce an error"
-		if __nfs_run_client /bin/ln $target $link; then
+		if __nfs_run client /bin/ln $target $link; then
 			testbus_test_failure "recreating an existing hardlink did not fail"
 		fi
 	fi
 
-	__nfs_run_client /bin/rm -f $target $link
+	__nfs_run client /bin/rm -f $target $link
 	testbus_test_success
 }
 
@@ -505,22 +620,22 @@ function nfs_test_symlink {
 	basename=${target##*/}
 
 	testbus_test_begin symlink
-	nfs_run_client --send-stdin /bin/bash <<-EOF
+	nfs_run client --send-stdin /bin/bash <<-EOF
 		echo imadoofus >$target
 	EOF
-	nfs_run_client /bin/ln -s $basename $link
-	content=`nfs_run_client /bin/cat $link`
+	nfs_run client /bin/ln -s $basename $link
+	content=`nfs_run client /bin/cat $link`
 
 	if [ "$content" != "imadoofus" ]; then
 		testbus_test_failure "Problem reading symlink"
 	else
 		testbus_trace "Trying to create the same symlink twice is supposed to produce an error"
-		if __nfs_run_client /bin/ln -s $basename $link; then
+		if __nfs_run client /bin/ln -s $basename $link; then
 			testbus_test_failure "/bin/ln -s on an existing symlink did not fail"
 		fi
 	fi
 
-	__nfs_run_client /bin/rm -f $target $link
+	__nfs_run client /bin/rm -f $target $link
 	testbus_test_success
 }
 
@@ -552,7 +667,7 @@ function nfs_test_fileops {
 		nfs_test_blkdev $client_dir
 		nfs_test_symlink $client_dir
 		nfs_test_hardlink $client_dir
-		nfs_run_client /bin/umount $client_dir
+		nfs_run client /bin/umount $client_dir
 	else
 		echo "Skipping NFS tests for this set of options" >&2
 	fi
@@ -568,8 +683,8 @@ function nfs_test_posix_lock1 {
 
 	testbus_test_begin posix-lock
 	testbus_trace "Grab a shared POSIX lock"
-	nfs_run_client $NFS_TOOL lock -t 1 $tf
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client1 $NFS_TOOL lock -t 1 $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -580,8 +695,8 @@ function nfs_test_posix_lock2 {
 
 	testbus_test_begin posix-lock2
 	testbus_trace "Grab an exclusive POSIX lock"
-	nfs_run_client $NFS_TOOL lock -t 1 -x $tf
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client1 $NFS_TOOL lock -t 1 -x $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -592,8 +707,8 @@ function nfs_test_posix_lock3 {
 
 	testbus_test_begin posix-lock3
 	testbus_trace "Lock and unlock, then make sure GETLK reports no more lock"
-	nfs_run_client $NFS_TOOL lock -t 1 -u $tf
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client1 $NFS_TOOL lock -t 1 -u $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -604,8 +719,8 @@ function nfs_test_posix_lock4 {
 
 	testbus_test_begin posix-lock4
 	testbus_trace "Grab a sequence of adjacent lock, then do an unlock on the whole range. Verify the lock is gone."
-	nfs_run_client $NFS_TOOL lock -t 1 -s -u $tf
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client1 $NFS_TOOL lock -t 1 -s -u $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -616,8 +731,8 @@ function nfs_test_posix_lock5 {
 
 	testbus_test_begin posix-lock5
 	testbus_trace "Grab shared POSIX locks on two clients"
-	nfs_run_client $NFS_TOOL lock -t 5 $tf &
-	if ! nfs_run_second --timeout 5 $NFS_TOOL lock -t 1 $tf; then
+	nfs_run client1 $NFS_TOOL lock -t 5 $tf &
+	if ! nfs_run client2 --timeout 5 $NFS_TOOL lock -t 1 $tf; then
 		testbus_test_failure "Failed to grab shared lock on second client"
 	fi
 
@@ -625,7 +740,7 @@ function nfs_test_posix_lock5 {
 		testbus_test_failure "Failed to grab shared lock on first client"
 	fi
 
-	__nfs_run_client /bin/rm -f $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -636,18 +751,18 @@ function nfs_test_posix_lock6 {
 
 	testbus_test_begin posix-lock6
 	testbus_trace "Grab exclusive POSIX lock one first client"
-	nfs_run_client $NFS_TOOL lock -t 10 -x $tf &
+	nfs_run client1 $NFS_TOOL lock -t 10 -x $tf &
 	sleep 1
 
 	testbus_trace "Try to grab shared lock on second client, nonblocking - this should fail"
-	if __nfs_run_second --timeout 1 $NFS_TOOL lock -t 1 -n $tf; then
+	if __nfs_run client2 --timeout 1 $NFS_TOOL lock -t 1 -n $tf; then
 		testbus_test_failure "Grabbing the lock on the second client succeeded"
 	else
 		testbus_trace "Good; fails as it should!"
 	fi
 
 	testbus_trace "Try to grab shared lock on second client, blocking - this should block, then succeed"
-	if ! nfs_run_second --timeout 20 $NFS_TOOL lock -t 1 $tf; then
+	if ! nfs_run client2 --timeout 20 $NFS_TOOL lock -t 1 $tf; then
 		testbus_test_failure "Blocking lock never acquired"
 	fi
 
@@ -656,10 +771,10 @@ function nfs_test_posix_lock6 {
 	fi
 
 	# Try to kill any leftover nfs tool processes
-	__nfs_run_client /sbin/killproc -9 $NFS_TOOL
-	__nfs_run_second /sbin/killproc -9 $NFS_TOOL
+	__nfs_run client1 /sbin/killproc -9 $NFS_TOOL
+	__nfs_run client2 /sbin/killproc -9 $NFS_TOOL
 
-	__nfs_run_client /bin/rm -f $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -670,8 +785,8 @@ function nfs_test_flock1 {
 
 	testbus_test_begin flock
 	testbus_trace "Grab a shared flock lock"
-	nfs_run_client $NFS_TOOL lock -t 1 -b $tf
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client1 $NFS_TOOL lock -t 1 -b $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -682,8 +797,8 @@ function nfs_test_flock2 {
 
 	testbus_test_begin flock2
 	testbus_trace "Grab an exclusive flock lock"
-	nfs_run_client $NFS_TOOL lock -t 1 -x -b $tf
-	__nfs_run_client /bin/rm -f $tf
+	nfs_run client1 $NFS_TOOL lock -t 1 -x -b $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -694,10 +809,10 @@ function nfs_test_flock3 {
 
 	testbus_test_begin flock3
 	testbus_trace "Grab shared flock locks on two clients"
-	nfs_run_client $NFS_TOOL lock -t 5 -b $tf &
+	nfs_run client1 $NFS_TOOL lock -t 5 -b $tf &
 	sleep 1
 
-	if ! __nfs_run_second --timeout 5 $NFS_TOOL lock -t 1 -b $tf; then
+	if ! __nfs_run client2 --timeout 5 $NFS_TOOL lock -t 1 -b $tf; then
 		testbus_test_failure "Failed to grab shared lock on second client"
 	fi
 
@@ -705,7 +820,7 @@ function nfs_test_flock3 {
 		testbus_test_failure "Failed to grab shared lock on first client"
 	fi
 
-	__nfs_run_client /bin/rm -f $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -732,17 +847,17 @@ function nfs_test_wait_grace {
 
 	testbus_test_begin grace-wait
 	testbus_trace "Wait for grace period to expire"
-	if ! __nfs_run_client --timeout 120 $NFS_TOOL lock -t 1 $tf; then
+	if ! __nfs_run client1 --timeout 120 $NFS_TOOL lock -t 1 $tf; then
 		testbus_test_failure "Unable to obtain lock"
 
 		# Kill the command in case it's still running
-		__nfs_run_client /sbin/killproc -9 $NFS_TOOL
+		__nfs_run client1 /sbin/killproc -9 $NFS_TOOL
 		ret=1
 	else
 		testbus_test_success
 	fi
 
-	__nfs_run_client /bin/rm -f $tf
+	__nfs_run client1 /bin/rm -f $tf
 	return $ret
 }
 
@@ -754,11 +869,11 @@ function nfs_test_locking {
 	client_dir=/mnt/nfs1
 
 	testbus_test_begin mount
-	if ! nfs_run_client /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
+	if ! nfs_run client1 /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
 		echo "Skipping NFS tests for this set of options" >&2
 		return
 	fi
-	if ! nfs_run_second /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
+	if ! nfs_run client2 /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
 		echo "Skipping NFS tests for this set of options" >&2
 		return
 	fi
@@ -778,8 +893,8 @@ function nfs_test_locking {
 	fi
 
 	testbus_test_begin unmount
-	nfs_run_client /bin/umount $client_dir
-	nfs_run_second /bin/umount $client_dir
+	nfs_run client1 /bin/umount $client_dir
+	nfs_run client2 /bin/umount $client_dir
 	testbus_test_success
 }
 
@@ -795,14 +910,14 @@ function nfs_test_cto {
 	testbus_test_begin cto
 
 	# On client1, write "frank" to the testfile
-	nfs_run_client --send-stdin /bin/bash <<-EOF
+	nfs_run client1 --send-stdin /bin/bash <<-EOF
 		echo -n frank >$tf
 	EOF
 
-	before=`nfs_run_client /bin/cat $tf`
+	before=`nfs_run client1 /bin/cat $tf`
 
 	# On the *other* client, write "zappa" to the testfile
-	nfs_run_second --send-stdin /bin/bash <<-EOF
+	nfs_run client2 --send-stdin /bin/bash <<-EOF
 		echo zappa >>$tf
 	EOF
 
@@ -810,7 +925,7 @@ function nfs_test_cto {
 	# the file, and discard its cache. IOW the current file content, 
 	# which is "frankzappa", should be visible on the first client,
 	# too.
-	after=`nfs_run_client /bin/cat $tf`
+	after=`nfs_run client1 /bin/cat $tf`
 
 	if [ "$before" = "frank" -a "$after" = "frankzappa" ]; then
 		testbus_test_success
@@ -818,13 +933,13 @@ function nfs_test_cto {
 		testbus_trace "before=$before (should be frank)"
 		testbus_trace "after=$after (should be frankzappa)"
 		testbus_trace "File attributes (1st client):"
-		nfs_run_client /usr/bin/stat $tf
+		nfs_run client1 /usr/bin/stat $tf
 		testbus_trace "File attributes (2nd client):"
-		nfs_run_second /usr/bin/stat $tf
+		nfs_run client2 /usr/bin/stat $tf
 		testbus_test_failure
 	fi
 
-	__nfs_run_client /bin/rm -f $tf
+	__nfs_run client1 /bin/rm -f $tf
 	testbus_test_success
 }
 
@@ -841,34 +956,34 @@ function __nfs_test_lock_coherence {
 	testbus-client get-events --purge $NFS_SECOND >/dev/null 
 
 	# Turn on lockd debugging
-	__nfs_run_second /usr/sbin/rpcdebug -m nlm all
+	__nfs_run client2 /usr/sbin/rpcdebug -m nlm all
 
 	# On client1, start the mmap challenger
 	# FIXME: there should be a better way to run a command in the background
-	__nfs_run_client $NFS_TOOL mmap2 -t $timeout -w 500 "$@" $tf &
+	__nfs_run client1 $NFS_TOOL mmap2 -t $timeout -w 500 "$@" $tf &
 
 	# The challenger create the test file, then locks it
 	# (it should really create a temp file, lock it, then move it to the
 	# final path).
 	echo -n "Waiting for challenger to start"
 	for n in `seq 1 10`; do
-		if __nfs_run_client /usr/bin/test -f $tf; then
+		if __nfs_run client1 /usr/bin/test -f $tf; then
 			break;
 		fi
 		echo -n "."
 		sleep 1
 	done
 
-	if ! __nfs_run_client /usr/bin/test -f $tf; then
+	if ! __nfs_run client1 /usr/bin/test -f $tf; then
 		testbus_test_failure "challenger did not start"
-		__nfs_run_client /sbin/killproc -9 $NFS_TOOL
+		__nfs_run client1 /sbin/killproc -9 $NFS_TOOL
 		return 1;
 	fi
 
 	sleep 1
 
 	# On client2, start the responder
-	if ! __nfs_run_second $NFS_TOOL mmap2 -r "$@" $tf; then
+	if ! __nfs_run client2 $NFS_TOOL mmap2 -r "$@" $tf; then
 		testbus_test_failure "responder failed"
 	fi
 
@@ -878,10 +993,10 @@ function __nfs_test_lock_coherence {
 	fi
 
 	# Turn off lockd debugging
-	__nfs_run_second /usr/sbin/rpcdebug -m nlm -c all
+	__nfs_run client2 /usr/sbin/rpcdebug -m nlm -c all
 	testbus-client get-events --purge $NFS_SECOND
 
-	__nfs_run_client /bin/rm -f $tf
+	__nfs_run client1 /bin/rm -f $tf
 }
 
 function nfs_test_mmap_coherence {
@@ -931,24 +1046,24 @@ function nfs_test_coherence {
 	client_dir=/mnt/nfs1
 
 	testbus_test_begin mount
-	if ! nfs_run_client /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
+	if ! nfs_run client1 /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
 		echo "Skipping NFS tests for this set of options" >&2
 		return
 	fi
-	if ! nfs_run_second /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
+	if ! nfs_run client2 /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir $mount_options; then
 		echo "Skipping NFS tests for this set of options" >&2
 		return
 	fi
 
 	if nfs_test_wait_grace $client_dir; then
-		#nfs_test_cto $client_dir
+		nfs_test_cto $client_dir
 		nfs_test_mmap_coherence $client_dir
 	else
 		testbus_trace "Skipping all lock/coherence tests"
 	fi
 
 	testbus_test_begin unmount
-	nfs_run_client /bin/umount $client_dir
-	nfs_run_second /bin/umount $client_dir
+	nfs_run client1 /bin/umount $client_dir
+	nfs_run client2 /bin/umount $client_dir
 	testbus_test_success
 }

@@ -19,8 +19,8 @@ nfs_server_write_exports - <<EOF
 EOF
 
 testbus_test_begin byname
-nfs_run_client /bin/mount $NFS_SERVER_NAME:/srv/nfs/dir1 /mnt/nfs1
-nfs_run_client /bin/umount /mnt/nfs1
+nfs_run client /bin/mount $NFS_SERVER_NAME:/srv/nfs/dir1 /mnt/nfs1
+nfs_run client /bin/umount /mnt/nfs1
 
 nfs_mount_should_succeed byaddr			/srv/nfs/dir1	/mnt/nfs1
 nfs_mount_should_succeed nfsv2			/srv/nfs/dir1	/mnt/nfs1 vers=2
