@@ -59,6 +59,8 @@ function nfs_init_server {
 		options lockd nlm_grace_period=10
 	EOF
 
+	nfs_init_idmap_conf server
+
 	# I would have loved to use yast2 for this, but so far I couldn't
 	# make it work.
 	if $USE_YAST; then
@@ -68,7 +70,7 @@ function nfs_init_server {
 		__nfs_run server /sbin/rpcbind || true
 
 		nfs_run server /bin/rm -rf /srv/nfs/dir{1,2,3,4}
-		nfs_run server /bin/mkdir -p /srv/nfs/dir{1,2,3,4}
+		nfs_run server /bin/mkdir -p -m 777 /srv/nfs/dir{1,2,3,4}
 		testbus_trace "server: starting nfs-server"
 		nfs_run server /etc/init.d/nfsserver start
 		nfs_run server /sbin/chkconfig nfsserver on
@@ -97,7 +99,7 @@ function nfs_init_client {
 
 	handle=`__nfs_host_handle $hostnick`
 	if [ -z "$handle" ]; then
-		testbus_test_failure "No handle for host $hostnick"
+		testbus_test_failure "$FUNCNAME: no handle for host $hostnick"
 		return 1
 	fi
 
@@ -115,6 +117,8 @@ function nfs_init_client {
 		return 1;
 	fi
 
+	nfs_init_idmap_conf $hostnick
+
 	# There's an icky issue with systemd and inssrv, which causes
 	# rpcbind not to be enabled automatically when you enable NFS
 	__nfs_run $hostnick /sbin/rpcbind || true
@@ -125,9 +129,38 @@ function nfs_init_client {
 		return 1;
 	fi
 
+	# In current kernels, the default is to not perform ID mapping
+	# in NFSv4 unless auth flavors other than AUTH_SYS are used.
+	# Since we want to use it, enable it.
+	echo N | testbus_upload_file $handle - /sys/module/nfs/parameters/nfs4_disable_idmapping
+
 	return 0
 }
 
+function nfs_init_idmap_conf {
+
+	local hostnick handle
+
+	hostnick=$1; shift
+	handle=`__nfs_host_handle $hostnick`
+	if [ -z "$handle" ]; then
+		testbus_test_failure "$FUNCNAME: no handle for host $hostnick"
+		return 1
+	fi
+
+	testbus_upload_file $handle - /etc/idmapd.conf <<-EOF
+	[General]
+
+	Verbosity = 15
+	Pipefs-Directory = /var/lib/nfs/rpc_pipefs
+	Domain = testbus.opensuse.org
+
+	[Mapping]
+
+	Nobody-User = nobody
+	Nobody-Group = nobody
+	EOF
+}
 
 ##################################################################
 # Overall NFS initialization

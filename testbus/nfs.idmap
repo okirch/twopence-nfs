@@ -1,0 +1,170 @@
+#!/bin/bash
+#
+# This script is part of the testbus NFS suite
+#
+# Copyright (C) 2013-2014 Olaf Kirch <okir@suse.de>
+#
+
+. ${0%/*}/nfs.init
+
+##################################################################
+# Create a couple of users on the given host
+##################################################################
+function nfs_create_users_on {
+
+	local hostnick base_uid
+	local username uid
+
+	hostnick=$1; shift
+	base_uid=$1; shift
+
+	testbus_test_begin $hostnick
+	uid=$base_uid
+	for username; do
+		if ! __nfs_run $hostnick /usr/sbin/useradd -u $uid $username; then
+			testbus_test_failure "Error creating user $username on host $hostnick"
+			return 1;
+		fi
+		let uid=$uid+1
+	done
+}
+
+function nfs_test_idmap_create_files {
+
+	local hostnick dir tf
+	local rv
+
+	hostnick=$1; shift
+	dir=$1; shift
+
+	testbus_test_begin grace-wait
+	tf=$dir/testfile
+	if ! nfs_run $hostnick $NFS_TOOL create-file $tf; then
+		return 1
+	fi
+	testbus_test_success
+
+	testbus_test_begin create-files
+	testbus_trace "Creating files on $hostnick using various user IDs"
+	for username in user{0,1,3,4,5,6,7,8,9}; do
+		local timing delay verify
+
+		tf=$dir/testfile-$username
+		verify=true
+
+		timing=`testbus_timing_begin`
+		if ! nfs_run $hostnick $NFS_TOOL -u $username create-file $tf; then
+			verify=false
+		fi
+		delay=`testbus_timing_elapsed $timing`
+
+		if [ $delay -gt 5 ]; then
+			testbus_test_failure "Creating the file took too long ($delay seconds)"
+			rv=1
+		fi
+
+		if $verify; then
+			nfs_run $hostnick $NFS_TOOL verify-file $tf
+		fi
+	done
+	testbus_test_success
+
+	return ${rv:-0}
+}
+
+function nfs_test_idmap_verify_files {
+
+	local hostnick dir tf
+	local rv
+
+	hostnick=$1; shift
+	dir=$1; shift
+
+	testbus_test_begin verify-files-$hostnick
+	testbus_trace "Verifying files on $hostnick, ensuring proper ownership"
+	for username in user{0,1,3,4,5,6,7,8,9}; do
+		tf=$dir/testfile-$username
+
+		if ! __nfs_run $hostnick /usr/bin/test -f $tf; then
+			testbus_trace "$tf does not exit (client2)"
+			testbus_test_failure "$tf does not exit (client2)"
+			rv=1
+		else
+			local owner uid
+
+			owner=`__nfs_run $hostnick /usr/bin/stat -c %%U $tf`
+			if [ "$owner" != $username ]; then
+				uid=`__nfs_run $hostnick /usr/bin/stat -c %%u $tf`
+				testbus_trace "$tf should be owned by $username, but is owned by $owner (uid $uid)"
+				testbus_test_failure
+				rv=1
+			fi
+		fi
+	done
+	testbus_test_success
+
+	return ${rv:-0}
+}
+
+function nfs_test_idmap {
+
+	local server_root server_dir client_dir tf
+
+	testbus_group_begin idmap
+
+	server_root=$1; shift
+	server_dir=$1; shift
+	client_dir=$1; shift
+
+	nfs_server_write_exports - <<-EOF
+	$server_root *(rw,fsid=0,no_subtree_check)
+	$server_root$server_dir  *(rw,nohide,insecure,no_subtree_check,sync)
+	EOF
+
+	testbus-client get-events --purge `__nfs_host_handle client1` >/dev/null
+	testbus-client get-events --purge `__nfs_host_handle client2` >/dev/null
+	testbus-client get-events --purge `__nfs_host_handle server` >/dev/null
+
+	testbus_test_begin mount
+	if ! nfs_run client1 /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir -o vers=4; then
+		testbus_trace "Skipping NFS tests for this set of options" >&2
+		return
+	fi
+	__nfs_run client1 /bin/cat /proc/self/mountstats
+	__nfs_run client1 /bin/cat /sys/module/nfs/parameters/nfs4_disable_idmapping
+
+	if ! nfs_run client2 /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir -o vers=4; then
+		__nfs_run client1 /bin/umount $client_dir
+		testbus_trace "Skipping NFS tests for this set of options" >&2
+		return
+	fi
+	testbus_test_success
+
+	nfs_test_idmap_create_files client1 $client_dir
+
+	nfs_test_idmap_verify_files server  $server_root$server_dir
+	nfs_test_idmap_verify_files client2 $client_dir
+	nfs_test_idmap_verify_files client1 $client_dir
+
+	testbus_test_begin unmount
+	nfs_run client1 /bin/umount $client_dir
+	nfs_run client2 /bin/umount $client_dir
+	testbus_test_success
+
+	testbus-client get-events `__nfs_host_handle client1` >client1.log
+	testbus-client get-events `__nfs_host_handle client2` >client2.log
+	testbus-client get-events `__nfs_host_handle server`  >server.log
+
+	testbus_group_finish
+}
+
+##################################################################
+# Basic idmapd testing
+##################################################################
+testbus_group_begin create-users
+nfs_create_users_on client1 1500 user{0,1,3,4,5,6,7,8,9}
+nfs_create_users_on client2 1600 user{0,1,3,4,5,6,7,8,9}
+nfs_create_users_on server  1700 user{0,1,3,4,5,6,7,8,9}
+testbus_group_finish
+
+nfs_test_idmap /srv/nfs /dir1 /mnt/nfs1
