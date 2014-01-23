@@ -20,6 +20,13 @@ function nfs_create_users_on {
 
 	testbus_test_begin $hostnick
 	uid=$base_uid
+
+	testbus_trace "Check if user(s) exist already"
+	if __nfs_run $hostnick /usr/bin/id -u $1 2>/dev/null; then
+		testbus_trace "User ID $1 exists already, skipping user creation"
+		return 0
+	fi
+
 	for username; do
 		if ! __nfs_run $hostnick /usr/sbin/useradd -u $uid $username; then
 			testbus_test_failure "Error creating user $username on host $hostnick"
@@ -108,10 +115,11 @@ function nfs_test_idmap_verify_files {
 
 function nfs_test_idmap {
 
-	local server_root server_dir client_dir tf
+	local authflavor server_root server_dir client_dir tf
 
 	testbus_group_begin idmap
 
+	authflavor=$1; shift
 	server_root=$1; shift
 	server_dir=$1; shift
 	client_dir=$1; shift
@@ -140,7 +148,19 @@ function nfs_test_idmap {
 	fi
 	testbus_test_success
 
-	nfs_test_idmap_create_files client1 $client_dir
+	if [ "$authflavor" = "auth_sys" ]; then
+		# Using ID mapping with auth_sys isn't really working all that well.
+		# In create() commands, no ID mapping will be done (because the
+		# client doesn't send an owner attribute), so instead the server will
+		# use the credentials from the RPC header - which is the unmapped ID.
+		# Hence, in order to test idmapping with auth_sys can be done in readonly
+		# mode only for now.
+		nfs_test_idmap_create_files server  $server_root$server_dir
+	else
+		# For other auth flavors, idmapping should also work when creating
+		# files from the client
+		nfs_test_idmap_create_files client1 $client_dir
+	fi
 
 	nfs_test_idmap_verify_files server  $server_root$server_dir
 	nfs_test_idmap_verify_files client2 $client_dir
@@ -167,4 +187,4 @@ nfs_create_users_on client2 1600 user{0,1,3,4,5,6,7,8,9}
 nfs_create_users_on server  1700 user{0,1,3,4,5,6,7,8,9}
 testbus_group_finish
 
-nfs_test_idmap /srv/nfs /dir1 /mnt/nfs1
+nfs_test_idmap auth_sys /srv/nfs /dir1 /mnt/nfs1
