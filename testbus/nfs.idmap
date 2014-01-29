@@ -129,10 +129,6 @@ function nfs_test_idmap {
 	$server_root$server_dir  *(rw,nohide,insecure,no_subtree_check,sync)
 	EOF
 
-	testbus-client get-events --purge `__nfs_host_handle client1` >/dev/null
-	testbus-client get-events --purge `__nfs_host_handle client2` >/dev/null
-	testbus-client get-events --purge `__nfs_host_handle server` >/dev/null
-
 	testbus_test_begin mount
 	if ! nfs_run client1 /bin/mount $NFS_SERVER_NAME:$server_dir $client_dir -o vers=4; then
 		testbus_trace "Skipping NFS tests for this set of options" >&2
@@ -170,10 +166,6 @@ function nfs_test_idmap {
 	nfs_run client1 /bin/umount $client_dir
 	nfs_run client2 /bin/umount $client_dir
 	testbus_test_success
-
-	testbus-client get-events `__nfs_host_handle client1` >client1.log
-	testbus-client get-events `__nfs_host_handle client2` >client2.log
-	testbus-client get-events `__nfs_host_handle server`  >server.log
 
 	testbus_group_finish
 }

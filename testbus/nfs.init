@@ -20,22 +20,19 @@ TESTBUS_CLAIM_TIMEOUT=240
 ##################################################################
 function nfs_init_claim_nodes {
 
-	NFS_SERVER=`testbus_claim_host --role server`
-	test -n "$NFS_SERVER" || testbus_exit_fail "unable to claim NFS server"
+	local nickname
 
-	NFS_CLIENT=`testbus_claim_host --role client`
-	test -n "$NFS_CLIENT" || testbus_exit_fail "unable to claim NFS client"
+	for nickname in server client1 client2; do
+		testbus_claim_node $nickname || testbus_exit_fail "unable to claim NFS $nickname"
+	done
 
-	NFS_SECOND=`testbus_claim_host --role client2`
-	test -n "$NFS_SECOND" || testbus_exit_fail "unable to claim second NFS client"
+	testbus_node_get_ipv4addr server  NFS_SERVER_IP
+	testbus_node_get_ipv4addr client1 NFS_CLIENT_IP
+	testbus_node_get_ipv4addr client2 NFS_SECOND_IP
 
-	NFS_SERVER_IP=`testbus_getenv_nonempty $NFS_SERVER primary_ip`
-	NFS_CLIENT_IP=`testbus_getenv_nonempty $NFS_CLIENT primary_ip`
-	NFS_SECOND_IP=`testbus_getenv_nonempty $NFS_SECOND primary_ip`
-
-	NFS_SERVER_NAME=`testbus_getenv_nonempty $NFS_SERVER hostname`
-	NFS_CLIENT_NAME=`testbus_getenv_nonempty $NFS_CLIENT hostname`
-	NFS_SECOND_NAME=`testbus_getenv_nonempty $NFS_SECOND hostname`
+	testbus_node_get_name server  NFS_SERVER_NAME
+	testbus_node_get_name client1 NFS_CLIENT_NAME
+	testbus_node_get_name client2 NFS_SECOND_NAME
 
 	cat <<-EOF
 	Claimed hosts
@@ -43,6 +40,8 @@ function nfs_init_claim_nodes {
 	Client:  $NFS_CLIENT_NAME ($NFS_CLIENT_IP)
 	Client:  $NFS_SECOND_NAME ($NFS_SECOND_IP)
 	EOF
+
+	testbus_nodes_display
 
 }
 
@@ -55,7 +54,7 @@ function nfs_init_server {
 
 	testbus_trace "server: setting up NFS server"
 
-	testbus_upload_file $NFS_SERVER - /etc/modprobe.d/90-testbus-nfs.conf <<-EOF
+	testbus_node_upload_file server - /etc/modprobe.d/90-testbus-nfs.conf <<-EOF
 		options lockd nlm_grace_period=10
 	EOF
 
@@ -77,9 +76,9 @@ function nfs_init_server {
 	fi
 
 	testbus_trace "NLM grace period reported on the server"
-	testbus_download_file $NFS_SERVER /etc/modprobe.d/90-testbus-nfs.conf -
+	testbus_node_download_file server /etc/modprobe.d/90-testbus-nfs.conf -
 
-	nfs_update_hosts $NFS_SERVER <<-EOF
+	nfs_update_hosts server <<-EOF
 		$NFS_CLIENT_IP $NFS_CLIENT_NAME client1.testbus.opensuse.org
 		$NFS_SECOND_IP $NFS_SECOND_NAME client2.testbus.opensuse.org
 	EOF
@@ -93,17 +92,11 @@ function nfs_init_server {
 ##################################################################
 function nfs_init_client {
 
-	local hostnick handle
+	local hostnick
 
 	hostnick=$1; shift
 
-	handle=`__nfs_host_handle $hostnick`
-	if [ -z "$handle" ]; then
-		testbus_test_failure "$FUNCNAME: no handle for host $hostnick"
-		return 1
-	fi
-
-	nfs_update_hosts $handle <<-EOF
+	nfs_update_hosts $hostnick <<-EOF
 	$NFS_SERVER_IP	$NFS_SERVER_NAME nfs-server.testbus.opensuse.org
 	EOF
 
@@ -132,23 +125,18 @@ function nfs_init_client {
 	# In current kernels, the default is to not perform ID mapping
 	# in NFSv4 unless auth flavors other than AUTH_SYS are used.
 	# Since we want to use it, enable it.
-	echo N | testbus_upload_file $handle - /sys/module/nfs/parameters/nfs4_disable_idmapping
+	echo N | testbus_node_upload_file $hostnick - /sys/module/nfs/parameters/nfs4_disable_idmapping
 
 	return 0
 }
 
 function nfs_init_idmap_conf {
 
-	local hostnick handle
+	local hostnick
 
 	hostnick=$1; shift
-	handle=`__nfs_host_handle $hostnick`
-	if [ -z "$handle" ]; then
-		testbus_test_failure "$FUNCNAME: no handle for host $hostnick"
-		return 1
-	fi
 
-	testbus_upload_file $handle - /etc/idmapd.conf <<-EOF
+	testbus_node_upload_file $hostnick - /etc/idmapd.conf <<-EOF
 	[General]
 
 	Verbosity = 15
