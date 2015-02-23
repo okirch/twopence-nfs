@@ -20,8 +20,7 @@ install: $(APPS)
 	install -m 755 -d $(DESTDIR)$(bindir)
 	install -m 555 $(APPS) $(DESTDIR)$(bindir)
 	install -m 755 -d $(DESTDIR)$(testdir)
-	install -m 755 $(SCRIPTS) $(DESTDIR)$(testdir)
-	install -m 644 $(CONFIG) $(DESTDIR)$(testdir)
+	install -m 555 twopence/run $(DESTDIR)$(testdir)
 
 obj/%.o: src/%.c
 	@mkdir -p obj
