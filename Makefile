@@ -1,6 +1,6 @@
 
 bindir	= /usr/bin
-testdir	= /usr/share/testbus/suites
+testdir	= /usr/lib/twopence/rpc
 
 CFLAGS	= -Wall -g
 APPS	= nfs lock-close-open lockbench
