@@ -1,6 +1,6 @@
 
 bindir	= /usr/bin
-testdir	= /usr/lib/twopence/rpc
+testdir	= /usr/lib/twopence/nfs
 
 CFLAGS	= -Wall -g
 APPS	= nfs lock-close-open lockbench
