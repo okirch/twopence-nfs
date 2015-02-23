@@ -1,0 +1,6 @@
+
+- Test NFS with Kerberos
+- Test NFSv4 id mapping
+- Test NFSv4 ACLs
+
+- Test intr and soft behavior

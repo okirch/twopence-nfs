@@ -1,0 +1,19 @@
+#!/bin/bash
+#
+# This script is part of the testbus NFS suite
+#
+# Copyright (C) 2013-2014 Olaf Kirch <okir@suse.de>
+#
+
+. ${0%/*}/nfs.init
+
+##################################################################
+# Run a standard set of tests exercising different operations
+# of the NFS protocol, for each NFS protocol version
+##################################################################
+testbus_group_begin fileops
+
+nfs_test_fileops_setup
+nfs_test_all_versions nfs_test_fileops
+
+testbus_group_finish SUCCESS

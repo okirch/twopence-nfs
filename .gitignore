@@ -1,0 +1,24 @@
+# Object files
+*.o
+*.ko
+
+# Libraries
+*.lib
+*.a
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Other
+*.swp
+
+# Executables
+*.exe
+*.out
+*.app
+lock-close-open
+lockbench
+nfs

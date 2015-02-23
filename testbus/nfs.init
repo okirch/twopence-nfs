@@ -1,0 +1,174 @@
+#!/bin/bash
+#
+# This script is part of the testbus NFS suite
+#
+# Copyright (C) 2013-2014 Olaf Kirch <okir@suse.de>
+#
+
+USE_YAST=false
+
+# TESTBUS_SELFTEST_DEBUG=most
+
+# Override the timeout for claiming the host.
+# Bringing up a VM guest can take some time, especially if it goes
+# through a firstboot stage first.
+TESTBUS_CLAIM_TIMEOUT=240
+
+
+##################################################################
+# Start testing
+##################################################################
+function nfs_init_claim_nodes {
+
+	local nickname
+
+	for nickname in server client1 client2; do
+		testbus_claim_node $nickname || testbus_exit_fail "unable to claim NFS $nickname"
+	done
+
+	testbus_node_get_ipv4addr server  NFS_SERVER_IP
+	testbus_node_get_ipv4addr client1 NFS_CLIENT_IP
+	testbus_node_get_ipv4addr client2 NFS_SECOND_IP
+
+	testbus_node_get_name server  NFS_SERVER_NAME
+	testbus_node_get_name client1 NFS_CLIENT_NAME
+	testbus_node_get_name client2 NFS_SECOND_NAME
+
+	cat <<-EOF
+	Claimed hosts
+	Server:  $NFS_SERVER_NAME ($NFS_SERVER_IP)
+	Client:  $NFS_CLIENT_NAME ($NFS_CLIENT_IP)
+	Client:  $NFS_SECOND_NAME ($NFS_SECOND_IP)
+	EOF
+
+	testbus_nodes_display
+
+}
+
+##################################################################
+# Initialize NFS server
+##################################################################
+function nfs_init_server {
+
+	testbus_test_begin server-init
+
+	testbus_trace "server: setting up NFS server"
+
+	testbus_node_upload_file server - /etc/modprobe.d/90-testbus-nfs.conf <<-EOF
+		options lockd nlm_grace_period=10
+	EOF
+
+	nfs_init_idmap_conf server
+
+	# I would have loved to use yast2 for this, but so far I couldn't
+	# make it work.
+	if $USE_YAST; then
+		testbus_exit_failure "not implemented"
+	else
+		# This is icky:
+		__nfs_run server /sbin/rpcbind || true
+
+		nfs_run server /bin/rm -rf /srv/nfs/dir{1,2,3,4}
+		nfs_run server /bin/mkdir -p -m 777 /srv/nfs/dir{1,2,3,4}
+		testbus_trace "server: starting nfs-server"
+		nfs_run server /etc/init.d/nfsserver start
+		nfs_run server /sbin/chkconfig nfsserver on
+	fi
+
+	testbus_trace "NLM grace period reported on the server"
+	testbus_node_download_file server /etc/modprobe.d/90-testbus-nfs.conf -
+
+	nfs_update_hosts server <<-EOF
+		$NFS_CLIENT_IP $NFS_CLIENT_NAME client1.testbus.opensuse.org
+		$NFS_SECOND_IP $NFS_SECOND_NAME client2.testbus.opensuse.org
+	EOF
+}
+
+##################################################################
+# Initialize an NFS client node
+# Usage:
+#   nfs_init_client $nickname
+# The nickname should be "client1" or "client2"
+##################################################################
+function nfs_init_client {
+
+	local hostnick
+
+	hostnick=$1; shift
+
+	nfs_update_hosts $hostnick <<-EOF
+	$NFS_SERVER_IP	$NFS_SERVER_NAME nfs-server.testbus.opensuse.org
+	EOF
+
+	if ! __nfs_run $hostnick /usr/sbin/showmount -e nfs-server.testbus.opensuse.org; then
+		testbus_test_failure "Unable to contact NFS server"
+		return 1
+	fi
+
+	if ! __nfs_run $hostnick /bin/mkdir -p /mnt/nfs{1,2,3,4}; then
+		testbus_test_failure "Failed to set up NFS mount points"
+		return 1;
+	fi
+
+	nfs_init_idmap_conf $hostnick
+
+	# There's an icky issue with systemd and inssrv, which causes
+	# rpcbind not to be enabled automatically when you enable NFS
+	__nfs_run $hostnick /sbin/rpcbind || true
+
+	# A simple start is not enough to make it start all helper services
+	if ! __nfs_run $hostnick /etc/init.d/nfs force-start; then
+		testbus_test_failure "NFS start script exited with error"
+		return 1;
+	fi
+
+	# In current kernels, the default is to not perform ID mapping
+	# in NFSv4 unless auth flavors other than AUTH_SYS are used.
+	# Since we want to use it, enable it.
+	echo N | testbus_node_upload_file $hostnick - /sys/module/nfs/parameters/nfs4_disable_idmapping
+
+	return 0
+}
+
+function nfs_init_idmap_conf {
+
+	local hostnick
+
+	hostnick=$1; shift
+
+	testbus_node_upload_file $hostnick - /etc/idmapd.conf <<-EOF
+	[General]
+
+	Verbosity = 15
+	Pipefs-Directory = /var/lib/nfs/rpc_pipefs
+	Domain = testbus.opensuse.org
+
+	[Mapping]
+
+	Nobody-User = nobody
+	Nobody-Group = nobody
+	EOF
+}
+
+##################################################################
+# Overall NFS initialization
+##################################################################
+if [ -z "$__NFS_INITIALIZED" ]; then
+
+	. /usr/share/testbus/functions
+	. ${0%/*}/nfs.functions
+
+	testbus_group_begin nfs
+
+	nfs_init_claim_nodes
+
+	nfs_init_server
+
+	testbus_test_begin client-init
+	nfs_init_client client1
+	nfs_init_client client2
+	testbus_test_success
+
+	__NFS_INITIALIZED=true
+fi
+
