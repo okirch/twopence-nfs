@@ -1,9 +1,9 @@
-testbus-nfs
-===========
+twopence-nfs
+============
 
-Scripts for testing NFS with testbus.
+Scripts for testing NFS with tewopence.
 
-This consists of several utilities, and scripts to be run in a testbus
+This consists of several utilities, and script to be run in a twopence
 scenario.
 
 nfs
