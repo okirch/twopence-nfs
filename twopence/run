@@ -49,7 +49,12 @@ def __nfs_run(target, command):
 	cmd = twopence.Command(command)
 
 	journal.info(target.name + ": " + cmd.commandline)
-	status = target.run(cmd)
+	try:
+		status = target.run(cmd)
+	except:
+		journal.failure("command execution failed with exception")
+		status = twopence.Status(256)
+
 	if not status:
 		journal.info("command failed: " + status.message)
 
