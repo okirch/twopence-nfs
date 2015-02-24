@@ -112,19 +112,17 @@ def init_server(node):
 
 	journal.beginGroup(None, "enable NFS server")
 
+	nfs_init_common(node)
+
 	journal.beginTest(None, "enable nfsd and rpcbind on server")
 	nfs_run(node, "/bin/rm -rf /srv/nfs/dir{1,2,3,4}")
 	nfs_run(node, "/bin/mkdir -p -m 777 /srv/nfs/dir{1,2,3,4}")
 
 	if node.run("test -x /usr/bin/systemctl"):
 		use_systemd = True
-		nfs_run(node, "/usr/bin/systemctl enable rpcbind.socket")
-		nfs_run(node, "/usr/bin/systemctl start rpcbind.socket")
 		nfs_run(node, "/etc/init.d/nfsserver start")
 		nfs_run(node, "/usr/bin/systemctl enable nfsserver");
 	else:
-		nfs_run(node, "insserv -d rpcbind")
-		nfs_run(node, "/etc/init.d/rpcbind start")
 		nfs_run(node, "insserv -d nfsserver");
 		nfs_run(node, "/etc/init.d/nfsserver start")
 
@@ -143,9 +141,11 @@ def init_server(node):
 def init_client(node):
 	global server;
 
-	nfs_add_hostsfile(node, server.ipaddr, "nfs-server.testing.opensuse.org")
-
 	journal.beginTest(None, "initialize client %s" % node.name)
+
+	nfs_init_common(node)
+
+	nfs_add_hostsfile(node, server.ipaddr, "nfs-server.testing.opensuse.org")
 	if not __nfs_run(node, "/usr/sbin/showmount -e nfs-server.testing.opensuse.org"):
 		journal.fatal("Unable to contact NFS server")
 		return False
@@ -163,10 +163,6 @@ def init_client(node):
 
 	# nfs_write_idmap_conf(node)
 
-	# There's an icky issue with systemd and insserv, which causes
-	# rpcbind not to be enabled automatically when you enable NFS
-	__nfs_run(node, "/sbin/rpcbind")
-
 	# A simple start is not enough to make it start all helper services
 	if not __nfs_run(node, "/etc/init.d/nfs force-start"):
 		journal.fatal("NFS start script exited with error")
@@ -178,6 +174,21 @@ def init_client(node):
 	# node.sendfile(remotefile = "/sys/module/nfs/parameters/nfs4_disable_idmapping", data = "N")
 
 	return True
+
+##################################################################
+# Common initialization code for clients and server
+##################################################################
+def nfs_init_common(node):
+	if node.run("test -x /usr/bin/systemctl"):
+		nfs_run(node, "/usr/bin/systemctl enable rpcbind.socket")
+		nfs_run(node, "/usr/bin/systemctl start rpcbind.socket")
+	else:
+		nfs_run(node, "insserv -d rpcbind")
+		nfs_run(node, "/etc/init.d/rpcbind start")
+
+	# exercise your shift key, stop the firewall
+	nfs_run(node, "rcSuSEfirewall2 stop")
+
 
 ##################################################################
 # Update the idmapd.conf file on the given node
