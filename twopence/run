@@ -10,7 +10,7 @@ import suselog
 import twopence
 import susetest
 
-journal = suselog.Journal("nfs", path = "report.xml");
+journal = None
 server = None
 client1 = None
 client2 = None
@@ -18,11 +18,16 @@ client2 = None
 nfstool	= "/usr/bin/nfs"
 
 def setup():
-	global client1, client2, server
+	global client1, client2, server, journal
+
+	config = susetest.Config()
+	reportPath = config.value("report")
+	if not reportPath:
+		reportPath = "report.xml"
+	journal = suselog.Journal("nfs", path = reportPath);
 
 	journal.beginGroup("setup")
 
-	config = susetest.Config()
 	server = config.target("server")
 	client1 = config.target("client1")
 
