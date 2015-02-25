@@ -45,8 +45,18 @@ def setup():
 
 	# FIXME: we should also verify the host names of these nodes
 
-def __nfs_run(target, command):
+def __nfs_run(target, command, timeout = -1):
 	cmd = twopence.Command(command)
+	if timeout >= 0:
+		# Ugly, but needed until upstream twopence is fixed
+		try:
+			cmd.timeout = timeout;
+		except:
+			timeout = str(timeout);
+		try:
+			cmd.timeout = timeout;
+		except:
+			journal.warning("Unable to set command timeout; expect issues")
 
 	journal.info(target.name + ": " + cmd.commandline)
 	try:
@@ -381,13 +391,13 @@ def nfs_mount_should_fail(client, servername, dir, options = None):
 ##################################################################
 # Create a file on a read-only volume
 ##################################################################
-def __nfs_verify_readonly(client, filename):
+def __nfs_verify_readonly(client, filename, timeout = -1):
 
 	import time
 
 	t0 = time.time();
 
-	if __nfs_run(client, "/bin/touch " + filename):
+	if __nfs_run(client, "/bin/touch " + filename, timeout = timeout):
 		journal.failure("file system should be read-only, but succeeded in creating file")
 		return False
 
@@ -410,6 +420,24 @@ def nfs_verify_readonly(dir, options):
 		return False
 
 	rv = __nfs_verify_readonly(client1, __nfs_client_file(dir, "readonly-test"))
+	nfs_do_umount(client1, dir)
+	return rv
+
+##################################################################
+# On the very first file operation after a reboot, the server
+# make take very long to respond to the request.
+# Try to deal with this gracefully, but still flag this as a
+# problem.
+##################################################################
+def nfs_verify_readonly_slow(dir, options):
+	global client1, server
+
+	nfs_run(server, "/bin/rm -f " + __nfs_server_file(dir, "readonly-test"))
+
+	if not nfs_do_mount(client1, server.ipaddr, dir, options):
+		return False
+
+	rv = __nfs_verify_readonly(client1, __nfs_client_file(dir, "readonly-test"), 4 * 60)
 	nfs_do_umount(client1, dir)
 	return rv
 
@@ -737,6 +765,7 @@ def nfs_test_exports():
 '''
 
 	nfs_write_verify_exports(server, exports_data)
+	nfs_verify_readonly_slow("dir1")
 
 	for options in [None, "vers=2", "vers=3", "vers=4"]:
 		journal.beginTest(None, "verify that dir1 is exported read-only")
