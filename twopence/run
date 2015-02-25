@@ -429,7 +429,7 @@ def nfs_verify_readonly(dir, options):
 # Try to deal with this gracefully, but still flag this as a
 # problem.
 ##################################################################
-def nfs_verify_readonly_slow(dir, options):
+def nfs_verify_readonly_slow(dir, options = None):
 	global client1, server
 
 	nfs_run(server, "/bin/rm -f " + __nfs_server_file(dir, "readonly-test"))
