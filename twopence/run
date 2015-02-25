@@ -283,7 +283,28 @@ def __nfs_do_mount(client, servername, clientdir, serverdir, options = None):
 	return __nfs_run(client, cmdline)
 
 def __nfs_do_umount(client, clientdir):
-	return __nfs_run(client, "/bin/umount " + clientdir)
+	rv = __nfs_run(client, "/bin/umount " + clientdir)
+	if not rv and __nfs_is_mounted(client, clientdir):
+		import time
+
+		# Note, if the original umount call failed, we will always
+		# return that failure status, even if we manage to unmount
+		# the directory at a later point
+		journal.warning("it seems we failed to unmount %s - maybe still busy" % clientdir)
+
+		journal.info("Trying to kill off all processes accessing the directory")
+		client.run("fuser -km " + clientdir)
+
+		retry = 5
+		while __nfs_is_mounted(client, clientdir) and retry > 0:
+			journal.info("Sleeping for 10 seconds...")
+			time.sleep(10)
+			journal.info("Retrying unmount call")
+			__nfs_run(client, "/bin/umount " + clientdir)
+			retry -= 1
+
+		if retry < 0:
+			journal.info("Giving up")
 
 def __nfs_is_mounted(node, dir):
 	mtab = __nfs_mtab_get(node)
@@ -429,12 +450,14 @@ def nfs_verify_readonly(dir, options):
 # Try to deal with this gracefully, but still flag this as a
 # problem.
 ##################################################################
-def nfs_verify_readonly_slow(dir, options = None):
+def nfs_verify_readonly_slow(dir):
 	global client1, server
 
 	nfs_run(server, "/bin/rm -f " + __nfs_server_file(dir, "readonly-test"))
 
-	if not nfs_do_mount(client1, server.ipaddr, dir, options):
+	# TCP mount, retry operation after 20 seconds, retry twice.
+	# This operation should time out after less than 60 seconds overall
+	if not nfs_do_mount(client1, server.ipaddr, dir, "tcp,soft,intr,timeo=200,retrans=2"):
 		return False
 
 	rv = __nfs_verify_readonly(client1, __nfs_client_file(dir, "readonly-test"), 4 * 60)
