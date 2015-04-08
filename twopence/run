@@ -158,7 +158,6 @@ def nfs_add_hostsfile(node, addr, fqdn):
 ##################################################################
 def nfs_sysconfig_set(node, var, value):
 
-	journal.beginTest(None, "change %s=%s" % (var, value))
 	command = "sed -i 's:^[# ]*%s=.*:%s=\"%s\":' /etc/sysconfig/nfs" % (var, var, value)
 	nfs_run(node, command)
 	nfs_run(node, "grep %s /etc/sysconfig/nfs" % var)
@@ -198,9 +197,9 @@ def init_server(node):
 	if status and status.stdout.find("-2") >= 0:
 		journal.info("NFSv2 disabled on server by default");
 
+		journal.beginTest(None, "Enabling NFSv2 on server")
 		nfs_sysconfig_set(node, "MOUNTD_OPTIONS", "-V2")
 		nfs_sysconfig_set(node, "NFSD_OPTIONS", "-V2")
-
 		nfs_run(node, "rcnfsserver restart")
 
 	journal.finishGroup()
@@ -328,6 +327,13 @@ def nfs_init_all():
 ##################################################################
 # Mount and unmount a directory
 ##################################################################
+def nfs_join_mount_options(left, right):
+	if left and right:
+		return left + "," + right
+	if left:
+		return left
+	return right
+
 def __nfs_do_mount(client, servername, clientdir, serverdir, options = None):
 	journal.info("mounting %s from %s (options %s)" % (serverdir, servername, options))
 	if options:
@@ -846,6 +852,9 @@ def nfs_test_exports():
 	nfs_verify_readonly_slow("dir1")
 
 	for options in [None, "vers=2", "vers=3", "vers=4"]:
+		# Better safe than sorry
+		options = nfs_join_mount_options(options, "intr");
+
 		journal.beginTest(None, "verify that dir1 is exported read-only")
 		nfs_verify_readonly("dir1", options);
 
@@ -890,6 +899,9 @@ def nfs_test_fileops():
 	nfs_write_verify_exports(server, exports_data)
 
 	for options in [None, "vers=2", "vers=3", "vers=4"]:
+		# Better safe than sorry
+		options = nfs_join_mount_options(options, "intr");
+
 		journal.beginTest(None, "Mounting dir with options %s" % options)
 		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
 			journal.info("Skipping fileops tests for these options - cannot mount directory");
@@ -971,14 +983,7 @@ def nfs_test_posix_lock5(tf):
 
 	journal.beginTest(None, "Grab shared POSIX locks on two clients")
 
-	# What we do here:
-	# We grab one lock on client1, holding that for 5 seconds
-	# At the same time, we grab another lock on client2, and hold
-	# that for 1 second.
-	# FIXME: if the second command should block while trying to obtain
-	# the lock, we MUST time out while the the first command still has
-	# the lock. Otherwise we might just be proving that you can grab
-	# locks one at a time...
+	# Grab one lock on client1, holding that for 5 seconds
 	if not nfs_run_background(client1, "/usr/bin/nfs lock -t 5 " + tf):
 		journal.failure("Unable to run command in the background")
 
@@ -986,7 +991,9 @@ def nfs_test_posix_lock5(tf):
 	# lock
 	time.sleep(1)
 
-	if not nfs_run(client2, "/usr/bin/nfs lock -t 1 " + tf):
+	# We grab a second shared lock on client2, and hold that for 1 second.
+	# In case we block for some reason, we run the command with a 3 second
+	if not __nfs_run(client2, "/usr/bin/nfs lock -t 1 " + tf, timeout = 3):
 		journal.failure("Failed to grab shared lock on second client")
 		client1.waitAll()
 		return
@@ -1039,6 +1046,54 @@ def nfs_test_posix_lock6(tf):
 
 	journal.success()
 
+def nfs_test_flock1(tf):
+
+	global client1
+
+	journal.beginTest(None, "Grab a shared FLOCK lock")
+	nfs_run(client1, "/usr/bin/nfs lock -t 1 -b " + tf)
+
+def nfs_test_flock2(tf):
+
+	global client1
+
+	journal.beginTest(None, "Grab a exclusive FLOCK lock")
+	nfs_run(client1, "/usr/bin/nfs lock -t 1 -x -b " + tf)
+
+def nfs_test_flock3(tf):
+
+	global client1, client2
+
+	# Only run this test if we're using a twopence version that supports
+	# backgrounded commands.
+	try:
+		client1.wait()
+	except:
+		return
+
+	journal.beginTest(None, "Grab shared FLOCK locks on two clients")
+
+	# Grab one lock on client1, holding that for 5 seconds
+	if not nfs_run_background(client1, "/usr/bin/nfs lock -t 5 -b " + tf):
+		journal.failure("Unable to run command in the background")
+
+	# Wait for 1 second to make sure this guy has really had the time to grab the
+	# lock
+	time.sleep(1)
+
+	# We grab a second shared lock on client2, and hold that for 1 second.
+	# In case we block for some reason, we run the command with a 3 second
+	if not __nfs_run(client2, "/usr/bin/nfs lock -t 1 -b " + tf, timeout = 3):
+		journal.failure("Failed to grab shared lock on second client")
+		client1.waitAll()
+		return
+
+	if not nfs_wait(client1):
+		journal.failure("Failed to grab shared lock on first client")
+		return
+
+	journal.success()
+
 def nfs_test_locking():
 
 	global client1, client2, server
@@ -1052,7 +1107,7 @@ def nfs_test_locking():
 
 	for options in [None, "vers=2", "vers=3", "vers=4"]:
 		# Better safe than sorry
-		options = options + ",intr"
+		options = nfs_join_mount_options(options, "intr");
 
 		journal.beginTest(None, "Mounting dir with options %s" % options)
 		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
@@ -1074,6 +1129,10 @@ def nfs_test_locking():
 			nfs_test_posix_lock6(testfile)
 
 			# FIXME: we may want to kill any leftover nfs processes on both clients at this point
+
+			nfs_test_flock1(testfile)
+			nfs_test_flock2(testfile)
+			nfs_test_flock3(testfile)
 		else:
 			journal.warning("Skipping all locking tests")
 
