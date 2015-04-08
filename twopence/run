@@ -9,6 +9,7 @@ import sys
 import suselog
 import twopence
 import susetest
+import time
 
 journal = None
 server = None
@@ -92,6 +93,32 @@ def nfs_run(target, command):
 	status = __nfs_run(target, command)
 	if not(status):
 		journal.failure("command \"" + command + "\" failed: " + status.message);
+	return status
+
+def nfs_run_background(node, command, timeout = -1):
+	cmd = twopence.Command(command, background = 1)
+	if timeout >= 0:
+		__nfs_cmd_set_timeout(cmd, timeout)
+
+	journal.info(target.name + ": " + cmd.commandline + " (backgrounded)")
+	try:
+		target.run(cmd)
+		return True
+	except:
+		journal.failure("command execution failed with exception")
+		return False
+
+def nfs_wait(node, command = None):
+	if command:
+		status = node.wait(command)
+	else
+		status = node.wait()
+
+	if status == None:
+		return False
+
+	journal.info("Backgrounded command finished: " + status.command.commandline)
+	__nfs_log_status(status)
 	return status
 
 ##################################################################
@@ -952,11 +979,14 @@ def nfs_test_posix_lock5(tf):
 	# the lock, we MUST time out while the the first command still has
 	# the lock. Otherwise we might just be proving that you can grab
 	# locks one at a time...
-	cmd1 = twopence.Command("/usr/bin/nfs lock -t 5 " + tf)
-	cmd2 = twopence.Command("/usr/bin/nfs lock -t 1 " + tf)
+	if not nfs_run_background(client1, "/usr/bin/nfs lock -t 5 " + tf):
+		journal.failure("Unable to run command in the background")
 
-	client1.run(cmd1, background = 1)
-	if not nfs_run(client2, cmd2):
+	# Wait for 1 second to make sure this guy has really had the time to grab the
+	# lock
+	time.sleep(1)
+
+	if not nfs_run(client2, "/usr/bin/nfs lock -t 1 " + tf):
 		journal.failure("Failed to grab shared lock on second client")
 		client1.waitAll()
 		return
@@ -999,7 +1029,7 @@ def nfs_test_locking():
 		else:
 			journal.warning("Skipping all locking tests")
 
-		nfs_run(client1, "rm -f " + tf)
+		nfs_run(client1, "rm -f " + testfile)
 
 		nfs_do_umount(client1, "dir1")
 		nfs_do_umount(client2, "dir1")
