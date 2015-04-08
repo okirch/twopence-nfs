@@ -831,6 +831,8 @@ def nfs_test_mount():
 	nfs_mount_should_succeed(client1, server.ipaddr, "dir1", "nfsvers=3,tcp")
 	nfs_mount_should_succeed(client1, server.ipaddr, "dir1", "nfsvers=2,udp")
 	nfs_mount_should_succeed(client1, server.ipaddr, "dir1", "nfsvers=3,udp")
+	nfs_mount_should_succeed(client1, server.ipaddr, "dir1", "nfsvers=3,proto=tcp")
+	nfs_mount_should_succeed(client1, server.ipaddr, "dir1", "nfsvers=3,proto=udp")
 
 	# TBD: Mounting /srv/nfs/dir1/../../../etc should fail
 
@@ -839,7 +841,7 @@ def nfs_test_exports():
 
 	global client1, client2, server
 
-	journal.beginGroup("exports")
+	journal.beginGroup("export-flags")
 
 	exports_data = '''
 /srv/nfs/dir1	*(ro,subtree_check)
@@ -855,17 +857,19 @@ def nfs_test_exports():
 		# Better safe than sorry
 		options = nfs_join_mount_options(options, "intr");
 
-		journal.beginTest(None, "verify that dir1 is exported read-only")
+		journal.beginTest(None, "verify that dir1 is exported read-only (mounted with options %s)" % options)
 		nfs_verify_readonly("dir1", options);
 
-		journal.beginTest(None, "verify that dir2 is exported read-write")
+		journal.beginTest(None, "verify that dir2 is exported read-write (mounted with options %s)" % options)
 		nfs_verify_readwrite("dir2", options, 0, 0);
 
-		journal.beginTest(None, "verify that dir3 is exported read-write with root squash")
+		journal.beginTest(None, "verify that dir3 is exported read-write with root squash (mounted with options %s)" % options)
 		nfs_verify_readwrite("dir3", options, 65534, 65534);
 
-		journal.beginTest(None, "verify that dir4 is exported read-write with anonuid=60000")
+		journal.beginTest(None, "verify that dir4 is exported read-write with anonuid=60000 (mounted with options %s)" % options)
 		nfs_verify_readwrite("dir4", options, 60000, 65534);
+
+	journal.beginGroup("export-matching")
 
 	##################################################################
 	# Test IP prefix matching
