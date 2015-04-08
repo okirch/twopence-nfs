@@ -162,12 +162,12 @@ def init_server(node):
 		nfs_add_hostsfile(node, client2.ipaddr, "client2.testing.opensuse.org")
 
 	journal.beginTest(None, "Check whether NFSv2 is enabled by default")
-	status = nfs_run("cat /proc/fs/nfsd/versions")
+	status = nfs_run(node, "cat /proc/fs/nfsd/versions")
 	if status and status.stdout.find("-2") >= 0:
 		journal.info("NFSv2 disabled on server by default");
 
-		nfs_sysconfig_set(server, "MOUNTD_OPTIONS", "-V2")
-		nfs_sysconfig_set(server, "NFSD_OPTIONS", "-V2")
+		nfs_sysconfig_set(node, "MOUNTD_OPTIONS", "-V2")
+		nfs_sysconfig_set(node, "NFSD_OPTIONS", "-V2")
 
 		nfs_run(node, "rcnfsserver restart")
 
