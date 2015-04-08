@@ -879,11 +879,109 @@ def nfs_test_fileops():
 
 		nfs_do_umount(client1, "dir1")
 
+##################################################################
+# File locking tests
+##################################################################
+
+def nfs_test_wait_grace(node, dir):
+
+	# Before running all the locking tests, make sure that the grace period has
+	# expired.
+
+	tf = dir + "/testfile";
+
+	journal.beginTest("grace-wait", "Make sure the locking grace period has expired")
+	if __nfs_run(node, "/usr/bin/nfs lock -t 1 %s" % tf", 120):
+		journal.success();
+		ret = True
+	else:
+		journal.failure("Unable to obtain lock")
+		node.run("/sbin/killproc -9 /usr/bin/nfs");
+		ret = False
+
+	node.run("rm -f " + tf)
+	return ret
+
+def nfs_test_posix_lock1(dir)
+
+	global client1
+
+	tf = dir + "/testfile"
+
+	journal.beginTest(None, "Grab a shared POSIX lock")
+	nfs_run(client1, "/usr/bin/nfs lock -t 1 " + tf)
+	node.run("rm -f " + tf)
+
+def nfs_test_posix_lock2(dir)
+
+	global client1
+
+	tf = dir + "/testfile"
+
+	journal.beginTest(None, "Grab an exclusive POSIX lock")
+	nfs_run(client1, "/usr/bin/nfs lock -t 1 -x " + tf)
+	node.run("rm -f " + tf)
+
+def nfs_test_posix_lock3(dir)
+
+	global client1
+
+	tf = dir + "/testfile"
+
+	journal.beginTest(None, "Lock and unlock, then make sure GETLK reports no more locks")
+	nfs_run(client1, "/usr/bin/nfs lock -t 1 -u " + tf)
+	node.run("rm -f " + tf)
+
+def nfs_test_posix_lock4(dir)
+
+	global client1
+
+	tf = dir + "/testfile"
+
+	journal.beginTest(None, "Grab a sequence of adjacent locks, unlock whole range, and make all locks are gone")
+	nfs_run(client1, "/usr/bin/nfs lock -t 1 -s -u " + tf)
+	node.run("rm -f " + tf)
+
+def nfs_test_locking():
+
+	global client1, client2, server
+
+	journal.beginGroup("locking")
+
+	exports_data = '''
+/srv/nfs/dir1	*(rw,no_root_squash,subtree_check)
+'''
+	nfs_write_verify_exports(server, exports_data)
+
+	for options in [None, "vers=2", "vers=3", "vers=4"]:
+		journal.beginTest(None, "Mounting dir with options %s" % options)
+		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
+			journal.info("Skipping locking tests for these options - cannot mount directory");
+			continue;
+
+		if not nfs_do_mount(client2, server.ipaddr, "dir1", options):
+			journal.info("Skipping locking tests for these options - cannot mount directory");
+			nfs_do_umount(client1, dir)
+			continue;
+
+		clientdir = __nfs_client_file("dir1")
+		if nfs_test_wait_grace(client1, clientdir):
+			nfs_test_posix_lock1(clientdir)
+			nfs_test_posix_lock2(clientdir)
+			nfs_test_posix_lock3(clientdir)
+			nfs_test_posix_lock4(clientdir)
+		else:
+			journal.warning("Skipping all locking tests")
+
+		nfs_do_umount(client1, "dir1")
+		nfs_do_umount(client2, "dir1")
+
 def main():
 	nfs_init_all()
 	nfs_test_mount()
 	nfs_test_exports()
 	nfs_test_fileops()
+	nfs_test_locking()
 
 	journal.writeReport()
 
