@@ -125,7 +125,7 @@ def nfs_add_hostsfile(node, addr, fqdn):
 def init_server(node):
 	global client1, client2;
 
-	journal.beginGroup(None, "enable NFS server")
+	journal.beginGroup("server-init", "enable NFS server")
 
 	nfs_init_common(node)
 
