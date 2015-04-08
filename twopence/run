@@ -1149,12 +1149,83 @@ def nfs_test_locking():
 		nfs_do_umount(client1, "dir1")
 		nfs_do_umount(client2, "dir1")
 
+##################################################################
+# Ensure that file attributes are validated when reopening a
+# file (also called close-to-open (cto) consistency
+##################################################################
+def nfs_test_cto(tf):
+
+	global client1, client2
+
+	journal.beginTest("cto", "Test close-to-open consistency")
+
+	journal.info("On client1, write 'frank' to the testfile");
+	__nfs_run(client1, "echo -n frank >" + tf)
+
+	journal.info("On client2, append 'zappa' to the testfile");
+	__nfs_run(client2, "echo -n zappa >>" + tf)
+
+	# Expect the *first* client to revalidate attrs when reopening
+	# the file, and discard its cache. IOW the current file content, 
+	# which is "frankzappa", should be visible on the first client,
+	# too.
+	journal.info("Read the test file on client1")
+	status = __nfs_run(client1, "cat " + tf)
+	if not(status):
+		journal.failure("unable to read testfile on client1")
+	else:
+		after = str(status.stdout)
+		if after == "frankzappa":
+			journal.success("Great: file contains \"frankzappa\"")
+		else:
+			journal.failure("Too bad: file contains \"%s\" (expected \"frankzappa\")" % after)
+
+def nfs_test_coherence():
+
+	global client1, client2, server
+
+	journal.beginGroup("coherence-init")
+
+	exports_data = '''
+/srv/nfs/dir1	*(rw,no_root_squash,subtree_check)
+'''
+	nfs_write_verify_exports(server, exports_data)
+
+	for options in ["vers=2", "vers=3", "vers=4"]:
+		# Better safe than sorry
+		options = nfs_join_mount_options(options, "intr");
+
+		journal.beginGroup("coherence-%s" % options)
+
+		journal.beginTest(None, "Mounting dir with options " + options)
+		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
+			journal.info("Skipping locking tests for these options - cannot mount directory");
+			continue;
+
+		if not nfs_do_mount(client2, server.ipaddr, "dir1", options):
+			journal.info("Skipping locking tests for these options - cannot mount directory");
+			nfs_do_umount(client1, dir)
+			continue;
+
+		testfile = __nfs_client_file("dir1") + "/testfile"
+		if nfs_test_wait_grace(client1, testfile):
+			nfs_test_cto(testfile)
+			# nfs_test_mmap_coherence(testfile)
+		else:
+			journal.warning("Skipping all coherence tests")
+
+		nfs_run(client1, "rm -f " + testfile)
+
+		nfs_do_umount(client1, "dir1")
+		nfs_do_umount(client2, "dir1")
+
 def main():
 	nfs_init_all()
 	nfs_test_mount()
 	nfs_test_exports()
 	nfs_test_fileops()
 	nfs_test_locking()
+	nfs_test_coherence()
 
 	journal.writeReport()
 
