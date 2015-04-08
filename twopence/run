@@ -111,7 +111,7 @@ def nfs_run_background(node, command, timeout = -1):
 def nfs_wait(node, command = None):
 	if command:
 		status = node.wait(command)
-	else
+	else:
 		status = node.wait()
 
 	if status == None:
@@ -997,6 +997,48 @@ def nfs_test_posix_lock5(tf):
 
 	journal.success()
 
+def nfs_test_posix_lock6(tf):
+
+	global client1, client2
+
+	# Only run this test if we're using a twopence version that supports
+	# backgrounded commands.
+	try:
+		client1.wait()
+	except:
+		return
+
+	journal.beginTest(None, "Grab exclusive POSIX locks on two clients")
+
+	# Grab one lock on client1, holding that for 10 seconds
+	if not nfs_run_background(client1, "/usr/bin/nfs lock -t 10 -x " + tf):
+		journal.failure("Unable to run command in the background")
+		return
+
+	# Wait for 1 second to make sure this guy has really had the time to grab the
+	# lock
+	time.sleep(1)
+
+	journal.info("Try to grab shared lock on second client, nonblocking - this should fail")
+	if __nfs_run(client2, "/usr/bin/nfs lock -t 1 -n " + tf, timeout = 1):
+		journal.failure("Grabbing the shared lock on second client succeeded!")
+		client1.waitAll()
+		return
+
+	journal.info("Unable to grab lock on second client: good")
+
+	journal.info("Try to grab shared lock on second client, blocking - this should block, then succeed")
+	if __nfs_run(client2, "/usr/bin/nfs lock -t 1 " + tf, timeout = 20):
+		journal.failure("Blocking lock never acquired")
+		client1.waitAll()
+		return
+
+	if not nfs_wait(client1):
+		journal.failure("Failed to grab exclusive lock on first client?!")
+		return
+
+	journal.success()
+
 def nfs_test_locking():
 
 	global client1, client2, server
@@ -1009,6 +1051,9 @@ def nfs_test_locking():
 	nfs_write_verify_exports(server, exports_data)
 
 	for options in [None, "vers=2", "vers=3", "vers=4"]:
+		# Better safe than sorry
+		options = options + ",intr"
+
 		journal.beginTest(None, "Mounting dir with options %s" % options)
 		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
 			journal.info("Skipping locking tests for these options - cannot mount directory");
@@ -1026,6 +1071,9 @@ def nfs_test_locking():
 			nfs_test_posix_lock3(testfile)
 			nfs_test_posix_lock4(testfile)
 			nfs_test_posix_lock5(testfile)
+			nfs_test_posix_lock6(testfile)
+
+			# FIXME: we may want to kill any leftover nfs processes on both clients at this point
 		else:
 			journal.warning("Skipping all locking tests")
 
