@@ -120,6 +120,18 @@ def nfs_add_hostsfile(node, addr, fqdn):
 	return True
 
 ##################################################################
+# Set a sysconfig variable
+# We should really have a suseutils module and add such stuff
+# there.
+##################################################################
+def nfs_sysconfig_set(node, var, value):
+
+	journal.beginTest(None, "change %s=%s" % (var, value))
+	command = "sed -i 's:^[# ]*%s=.*:%s=\"%s\":' /etc/sysconfig/nfs" % (var, var, value)
+	nfs_run(node, command)
+	nfs_run(node, "grep %s /etc/sysconfig/nfs" % var)
+
+##################################################################
 # Initialize RPC tests and run some initial sanity checks
 ##################################################################
 def init_server(node):
@@ -132,6 +144,7 @@ def init_server(node):
 	journal.beginTest(None, "enable nfsd and rpcbind on server")
 	nfs_run(node, "/bin/rm -rf /srv/nfs/dir{1,2,3,4}")
 	nfs_run(node, "/bin/mkdir -p -m 777 /srv/nfs/dir{1,2,3,4}")
+
 
 	if node.run("test -x /usr/bin/systemctl"):
 		use_systemd = True
@@ -147,6 +160,16 @@ def init_server(node):
 
 	if client2:
 		nfs_add_hostsfile(node, client2.ipaddr, "client2.testing.opensuse.org")
+
+	journal.beginTest(None, "Check whether NFSv2 is enabled by default")
+	status = nfs_run("cat /proc/fs/nfsd/versions")
+	if status and status.stdout.find("-2") >= 0:
+		journal.info("NFSv2 disabled on server by default");
+
+		nfs_sysconfig_set(server, "MOUNTD_OPTIONS", "-V2")
+		nfs_sysconfig_set(server, "NFSD_OPTIONS", "-V2")
+
+		nfs_run(node, "rcnfsserver restart")
 
 	journal.finishGroup()
 
