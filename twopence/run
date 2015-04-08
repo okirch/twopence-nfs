@@ -45,18 +45,29 @@ def setup():
 
 	# FIXME: we should also verify the host names of these nodes
 
+def __nfs_log_status(status):
+	if not status:
+		journal.info("command failed: " + status.message)
+
+	journal.recordStdout(status.stdout);
+	if status.stdout != status.stderr:
+		journal.recordStderr(status.stderr);
+
+def __nfs_cmd_set_timeout(cmd, timeout):
+	# Ugly, but needed until upstream twopence is fixed
+	try:
+		cmd.timeout = timeout;
+	except:
+		timeout = str(timeout);
+	try:
+		cmd.timeout = timeout;
+	except:
+		journal.warning("Unable to set command timeout; expect issues")
+
 def __nfs_run(target, command, timeout = -1):
 	cmd = twopence.Command(command)
 	if timeout >= 0:
-		# Ugly, but needed until upstream twopence is fixed
-		try:
-			cmd.timeout = timeout;
-		except:
-			timeout = str(timeout);
-		try:
-			cmd.timeout = timeout;
-		except:
-			journal.warning("Unable to set command timeout; expect issues")
+		__nfs_cmd_set_timeout(cmd, timeout)
 
 	journal.info(target.name + ": " + cmd.commandline)
 	try:
@@ -65,13 +76,7 @@ def __nfs_run(target, command, timeout = -1):
 		journal.failure("command execution failed with exception")
 		status = twopence.Status(256, bytearray(), bytearray())
 
-	if not status:
-		journal.info("command failed: " + status.message)
-
-	journal.recordStdout(status.stdout);
-	if status.stdout != status.stderr:
-		journal.recordStderr(status.stderr);
-	
+	__nfs_log_status(status)
 	return status
 
 def log_buffered_output(desc, data):
@@ -883,15 +888,12 @@ def nfs_test_fileops():
 # File locking tests
 ##################################################################
 
-def nfs_test_wait_grace(node, dir):
+def nfs_test_wait_grace(node, tf):
 
 	# Before running all the locking tests, make sure that the grace period has
 	# expired.
-
-	tf = dir + "/testfile";
-
 	journal.beginTest("grace-wait", "Make sure the locking grace period has expired")
-	if __nfs_run(node, "/usr/bin/nfs lock -t 1 %s" % tf", 120):
+	if __nfs_run(node, "/usr/bin/nfs lock -t 1 " + tf, 120):
 		journal.success();
 		ret = True
 	else:
@@ -899,48 +901,71 @@ def nfs_test_wait_grace(node, dir):
 		node.run("/sbin/killproc -9 /usr/bin/nfs");
 		ret = False
 
-	node.run("rm -f " + tf)
 	return ret
 
-def nfs_test_posix_lock1(dir)
+def nfs_test_posix_lock1(tf):
 
 	global client1
-
-	tf = dir + "/testfile"
 
 	journal.beginTest(None, "Grab a shared POSIX lock")
 	nfs_run(client1, "/usr/bin/nfs lock -t 1 " + tf)
-	node.run("rm -f " + tf)
 
-def nfs_test_posix_lock2(dir)
+def nfs_test_posix_lock2(tf):
 
 	global client1
-
-	tf = dir + "/testfile"
 
 	journal.beginTest(None, "Grab an exclusive POSIX lock")
 	nfs_run(client1, "/usr/bin/nfs lock -t 1 -x " + tf)
-	node.run("rm -f " + tf)
 
-def nfs_test_posix_lock3(dir)
+def nfs_test_posix_lock3(tf):
 
 	global client1
-
-	tf = dir + "/testfile"
 
 	journal.beginTest(None, "Lock and unlock, then make sure GETLK reports no more locks")
 	nfs_run(client1, "/usr/bin/nfs lock -t 1 -u " + tf)
-	node.run("rm -f " + tf)
 
-def nfs_test_posix_lock4(dir)
+def nfs_test_posix_lock4(tf):
 
 	global client1
 
-	tf = dir + "/testfile"
-
 	journal.beginTest(None, "Grab a sequence of adjacent locks, unlock whole range, and make all locks are gone")
 	nfs_run(client1, "/usr/bin/nfs lock -t 1 -s -u " + tf)
-	node.run("rm -f " + tf)
+
+def nfs_test_posix_lock5(tf):
+
+	global client1, client2
+
+	# Only run this test if we're using a twopence version that supports
+	# backgrounded commands.
+	try:
+		client1.wait()
+	except:
+		return
+
+	journal.beginTest(None, "Grab shared POSIX locks on two clients")
+
+	# What we do here:
+	# We grab one lock on client1, holding that for 5 seconds
+	# At the same time, we grab another lock on client2, and hold
+	# that for 1 second.
+	# FIXME: if the second command should block while trying to obtain
+	# the lock, we MUST time out while the the first command still has
+	# the lock. Otherwise we might just be proving that you can grab
+	# locks one at a time...
+	cmd1 = twopence.Command("/usr/bin/nfs lock -t 5 " + tf)
+	cmd2 = twopence.Command("/usr/bin/nfs lock -t 1 " + tf)
+
+	client1.run(cmd1, background = 1)
+	if not nfs_run(client2, cmd2):
+		journal.failure("Failed to grab shared lock on second client")
+		client1.waitAll()
+		return
+
+	if not nfs_wait(client1):
+		journal.failure("Failed to grab shared lock on first client")
+		return
+
+	journal.success()
 
 def nfs_test_locking():
 
@@ -964,14 +989,17 @@ def nfs_test_locking():
 			nfs_do_umount(client1, dir)
 			continue;
 
-		clientdir = __nfs_client_file("dir1")
-		if nfs_test_wait_grace(client1, clientdir):
-			nfs_test_posix_lock1(clientdir)
-			nfs_test_posix_lock2(clientdir)
-			nfs_test_posix_lock3(clientdir)
-			nfs_test_posix_lock4(clientdir)
+		testfile = __nfs_client_file("dir1") + "/testfile"
+		if nfs_test_wait_grace(client1, testfile):
+			nfs_test_posix_lock1(testfile)
+			nfs_test_posix_lock2(testfile)
+			nfs_test_posix_lock3(testfile)
+			nfs_test_posix_lock4(testfile)
+			nfs_test_posix_lock5(testfile)
 		else:
 			journal.warning("Skipping all locking tests")
+
+		nfs_run(client1, "rm -f " + tf)
 
 		nfs_do_umount(client1, "dir1")
 		nfs_do_umount(client2, "dir1")
