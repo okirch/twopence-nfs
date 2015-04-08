@@ -891,16 +891,18 @@ def nfs_test_fileops():
 
 	global client1, client2, server
 
-	journal.beginGroup("fileops")
+	journal.beginGroup("fileops-init")
 
 	exports_data = '''
 /srv/nfs/dir1	*(rw,no_root_squash,subtree_check)
 '''
 	nfs_write_verify_exports(server, exports_data)
 
-	for options in [None, "vers=2", "vers=3", "vers=4"]:
+	for options in ["vers=2", "vers=3", "vers=4"]:
 		# Better safe than sorry
 		options = nfs_join_mount_options(options, "intr");
+
+		journal.beginGroup("fileops-%s" % options)
 
 		journal.beginTest(None, "Mounting dir with options %s" % options)
 		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
@@ -1098,18 +1100,20 @@ def nfs_test_locking():
 
 	global client1, client2, server
 
-	journal.beginGroup("locking")
+	journal.beginGroup("locking-init")
 
 	exports_data = '''
 /srv/nfs/dir1	*(rw,no_root_squash,subtree_check)
 '''
 	nfs_write_verify_exports(server, exports_data)
 
-	for options in [None, "vers=2", "vers=3", "vers=4"]:
+	for options in ["vers=2", "vers=3", "vers=4"]:
 		# Better safe than sorry
 		options = nfs_join_mount_options(options, "intr");
 
-		journal.beginTest(None, "Mounting dir with options %s" % options)
+		journal.beginGroup("locking-%s" % options)
+
+		journal.beginTest(None, "Mounting dir with options " + options)
 		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
 			journal.info("Skipping locking tests for these options - cannot mount directory");
 			continue;
