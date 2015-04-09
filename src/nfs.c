@@ -1601,7 +1601,7 @@ nfslock_coherence(int argc, char **argv)
 		unsigned int index = 0, next;
 
 		/* Responder algorithm:
-		 *  - start at slot 1
+		 *  - start at slot 0
 		 *  - writelock current slot
 		 *  loop:
 		 *    - copy challenge to response field

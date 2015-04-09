@@ -319,6 +319,8 @@ def nfs_init_all():
 	if not server:
 		setup()
 		init_server(server);
+
+		journal.beginGroup("client-init", "initialize clients")
 		init_client(client1);
 		if client2:
 			init_client(client2);
@@ -1180,6 +1182,123 @@ def nfs_test_cto(tf):
 		else:
 			journal.failure("Too bad: file contains \"%s\" (expected \"frankzappa\")" % after)
 
+##################################################################
+# Test mmap/lock coherence behavior
+##################################################################
+def __nfs_test_lock_coherence(tf, mode):
+
+	global client1, client2
+
+	# Run mmap2 with
+	#  16 slots (one slot is page sized)
+	#  32 iterations
+	#  2min timeout
+	# Mode is a combination of -m and -s:
+	#  -m	If given, mmap the file into memory.
+	#	If not given, use read/write
+	#  -s	If given, use fsync/msync to flush modifications to server before unlock
+	#	If not given, expect the kernel to do that as part of the unlock
+	command = "/usr/bin/nfs mmap2 -c 16 -i 32 -t 120 %s " % mode
+
+	# Clean up from previous runs
+	if not nfs_run(client1, "rm -f " + tf):
+		journal.info("This should not have failed; something's really wrong")
+		return False
+
+	# On client1, start the mmap challenger
+	# The -w option instructs the challenger to sleep for 500ms
+	# while waiting for the responder to catch up
+	journal.info("Starting the challenger on client1")
+	cmd = twopence.Command(command + "-w 500 " + tf, background = 1)
+	if not nfs_run_background(client1, cmd):
+		return False
+
+	# The challenger creates the test file, then locks it
+	# (it should really create a temp file, lock it, then move it to the
+	# final path).
+	journal.info("Waiting for challenger to start")
+	ready = False
+	for n in range(0, 10):
+		if __nfs_run(client1, "test -f " + tf):
+			journal.info("ready!")
+			ready = True
+			break
+		journal.info("snore...")
+		time.sleep(1)
+
+	if not ready:
+		journal.failure("challenger did not start")
+		return False
+
+	time.sleep(1)
+
+	# On client2, start the responder.
+	# The -r option puts the tool in responder mode
+	journal.info("Starting the responder on client2")
+	if not __nfs_run(client2, command + "-r " + tf):
+		journal.failure("responder returned error")
+		return False
+
+	status = nfs_wait(client1)
+	if not status:
+		journal.failure("challenger exited with error")
+		return False
+
+	return True
+
+def nfs_locktest_cleanup(tf):
+	# Something went wrong. Clean up
+	__nfs_run(client1, "/sbin/killproc -9 /usr/bin/nfs")
+	client1.waitAll()
+
+	__nfs_run(client2, "/sbin/killproc -9 /usr/bin/nfs")
+	client2.waitAll()
+
+	__nfs_run(client1, "rm -f " + tf)
+
+def nfs_test_lock_coherence(tf):
+
+	# Only run these tests if we're using a twopence version that supports
+	# backgrounded commands.
+	try:
+		client1.wait()
+	except:
+		return
+
+	journal.info('''
+This set of tests validates the data coherence of NFS.
+
+A file of 16 page-sized slots is accessed simultaneously by a challenger 
+and a responder process. The challenger process writes a "challenge" word
+to each slot, and expects the responder to echo this back. Both processes
+use POSIX locks to prevent concurrent access during the read/write operations.
+
+The file will be accessed either using regular read/write system calls,
+or by mapping it into memory using mmap. Additional synchronization can
+be provided by using fsync/msync.
+''')
+
+	# Turn on lockd debugging
+	# __nfs_run(client2, "/usr/sbin/rpcdebug -m nlm all")
+
+	journal.beginTest(None, "locked read/write coherence")
+	if not __nfs_test_lock_coherence(tf, ""):
+		nfs_locktest_cleanup(tf)
+
+	journal.beginTest(None, "locked read/write/fsync coherence")
+	if not __nfs_test_lock_coherence(tf, "-s"):
+		nfs_locktest_cleanup(tf)
+
+	journal.beginTest(None, "locked mmap coherence")
+	if not __nfs_test_lock_coherence(tf, "-m"):
+		nfs_locktest_cleanup(tf)
+
+	journal.beginTest(None, "locked mmap/msync coherence")
+	if not __nfs_test_lock_coherence(tf, "-m -s"):
+		nfs_locktest_cleanup(tf)
+
+	# __nfs_run(client2, "/usr/sbin/rpcdebug -m nlm -c all")
+
 def nfs_test_coherence():
 
 	global client1, client2, server
@@ -1210,7 +1329,7 @@ def nfs_test_coherence():
 		testfile = __nfs_client_file("dir1") + "/testfile"
 		if nfs_test_wait_grace(client1, testfile):
 			nfs_test_cto(testfile)
-			# nfs_test_mmap_coherence(testfile)
+			nfs_test_lock_coherence(testfile)
 		else:
 			journal.warning("Skipping all coherence tests")
 
