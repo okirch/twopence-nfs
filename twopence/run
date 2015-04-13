@@ -925,7 +925,7 @@ def nfs_test_posix_lock6(tf):
 	journal.info("Unable to grab lock on second client: good")
 
 	journal.info("Try to grab shared lock on second client, blocking - this should block, then succeed")
-	if client2.run("/usr/bin/nfs lock -t 1 " + tf, timeout = 20):
+	if not client2.run("/usr/bin/nfs lock -t 1 " + tf, timeout = 20):
 		journal.failure("Blocking lock never acquired")
 		client1.waitAll()
 		return
