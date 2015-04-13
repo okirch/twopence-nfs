@@ -100,9 +100,9 @@ def nfs_run_background(node, command, timeout = -1):
 	if timeout >= 0:
 		__nfs_cmd_set_timeout(cmd, timeout)
 
-	journal.info(target.name + ": " + cmd.commandline + " (backgrounded)")
+	journal.info(node.name + ": " + cmd.commandline + " (backgrounded)")
 	try:
-		target.run(cmd)
+		node.run(cmd)
 		return True
 	except:
 		journal.failure("command execution failed with exception")
