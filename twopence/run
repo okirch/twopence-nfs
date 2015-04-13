@@ -357,7 +357,7 @@ def nfs_mount_should_fail(client, servername, dir, options = None):
 ##################################################################
 # Create a file on a read-only volume
 ##################################################################
-def __nfs_verify_readonly(client, filename, timeout = -1):
+def __nfs_verify_readonly(client, filename, timeout = 0):
 
 	import time
 
@@ -1170,9 +1170,15 @@ be provided by using fsync/msync.
 	if not __nfs_test_lock_coherence(tf, "-s"):
 		nfs_locktest_cleanup(tf)
 
-	journal.beginTest(None, "locked mmap coherence")
-	if not __nfs_test_lock_coherence(tf, "-m"):
-		nfs_locktest_cleanup(tf)
+	# At one point, a POSIX unlock would imply a flush of any
+	# mmapped pages covered by the lock, but it seems this code
+	# was intentionally removed.
+	# And it makes sense to not try to support this feature,
+	# because it only really works if locks are page aligned.
+	if False:
+		journal.beginTest(None, "locked mmap coherence")
+		if not __nfs_test_lock_coherence(tf, "-m"):
+			nfs_locktest_cleanup(tf)
 
 	journal.beginTest(None, "locked mmap/msync coherence")
 	if not __nfs_test_lock_coherence(tf, "-m -s"):
