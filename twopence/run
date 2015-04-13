@@ -21,13 +21,13 @@ nfstool	= "/usr/bin/nfs"
 def setup():
 	global client1, client2, server, journal
 
-	config = susetest.Config()
-	reportPath = config.value("report")
-	if not reportPath:
-		reportPath = "report.xml"
-	journal = suselog.Journal("nfs", path = reportPath);
+	config = susetest.Config("nfs")
 
+	journal = config.journal
 	journal.beginGroup("setup")
+
+	server = susetest.Target(config.node("server"))
+	client1 = susetest.Target(config.node("client1"))
 
 	server = config.target("server")
 	client1 = config.target("client1")
@@ -46,121 +46,6 @@ def setup():
 
 	# FIXME: we should also verify the host names of these nodes
 
-def __nfs_log_status(status):
-	if not status:
-		journal.info("command failed: " + status.message)
-
-	journal.recordStdout(status.stdout);
-	if status.stdout != status.stderr:
-		journal.recordStderr(status.stderr);
-
-def __nfs_cmd_set_timeout(cmd, timeout):
-	# Ugly, but needed until upstream twopence is fixed
-	try:
-		cmd.timeout = timeout;
-	except:
-		timeout = str(timeout);
-	try:
-		cmd.timeout = timeout;
-	except:
-		journal.warning("Unable to set command timeout; expect issues")
-
-def __nfs_run(target, command, timeout = -1):
-	cmd = twopence.Command(command)
-	if timeout >= 0:
-		__nfs_cmd_set_timeout(cmd, timeout)
-
-	journal.info(target.name + ": " + cmd.commandline)
-	try:
-		status = target.run(cmd)
-	except:
-		journal.failure("command execution failed with exception")
-		status = twopence.Status(256, bytearray(), bytearray())
-
-	__nfs_log_status(status)
-	return status
-
-def log_buffered_output(desc, data):
-	# data is usually a bytearray
-	if len(data) == 0:
-		return
-
-	journal.failure(desc + ":")
-	for line in str(data).split("\n"):
-		journal.failure(line);
-
-def nfs_run(target, command):
-	status = __nfs_run(target, command)
-	if not(status):
-		journal.failure("command \"" + command + "\" failed: " + status.message);
-	return status
-
-def nfs_run_background(node, command, timeout = -1):
-	cmd = twopence.Command(command, background = 1)
-	if timeout >= 0:
-		__nfs_cmd_set_timeout(cmd, timeout)
-
-	journal.info(node.name + ": " + cmd.commandline + " (backgrounded)")
-	try:
-		node.run(cmd)
-		return True
-	except:
-		journal.failure("command execution failed with exception")
-		return False
-
-def nfs_wait(node, command = None):
-	if command:
-		status = node.wait(command)
-	else:
-		status = node.wait()
-
-	if status == None:
-		return False
-
-	journal.info("Backgrounded command finished: " + status.command.commandline)
-	__nfs_log_status(status)
-	return status
-
-##################################################################
-# Add a line to a hosts file
-##################################################################
-def nfs_add_hostsfile(node, addr, fqdn):
-	alias = fqdn.split('.')[0]
-	if alias != fqdn:
-		line = "%s %s %s" % (addr, fqdn, alias)
-	else:
-		line = "%s %s" % (addr, fqdn)
-
-	journal.beginTest(None, "update hosts file on %s" % node.name)
-	status = node.recvfile("/etc/hosts");
-	if not status:
-		journal.failure("unable to download hosts file");
-		return False;
-
-	for l in str(status.buffer).split('\n'):
-		if l == line:
-			journal.info("requested line already in hosts file, nothing to be done")
-			journal.success()
-			return True
-
-	buffer = status.buffer + "\n" + line + "\n"
-	if not node.sendfile("/etc/hosts", data = buffer):
-		journal.failure("unable to upload modified hosts file");
-		return False
-
-	journal.success();
-	return True
-
-##################################################################
-# Set a sysconfig variable
-# We should really have a suseutils module and add such stuff
-# there.
-##################################################################
-def nfs_sysconfig_set(node, var, value):
-
-	command = "sed -i 's:^[# ]*%s=.*:%s=\"%s\":' /etc/sysconfig/nfs" % (var, var, value)
-	nfs_run(node, command)
-	nfs_run(node, "grep %s /etc/sysconfig/nfs" % var)
 
 ##################################################################
 # Initialize RPC tests and run some initial sanity checks
@@ -173,34 +58,34 @@ def init_server(node):
 	nfs_init_common(node)
 
 	journal.beginTest(None, "enable nfsd and rpcbind on server")
-	nfs_run(node, "/bin/rm -rf /srv/nfs/dir{1,2,3,4}")
-	nfs_run(node, "/bin/mkdir -p -m 777 /srv/nfs/dir{1,2,3,4}")
+	node.runOrFail("/bin/rm -rf /srv/nfs/dir{1,2,3,4}")
+	node.runOrFail("/bin/mkdir -p -m 777 /srv/nfs/dir{1,2,3,4}")
 
 
 	if node.run("test -x /usr/bin/systemctl"):
 		use_systemd = True
-		nfs_run(node, "/etc/init.d/nfsserver start")
-		nfs_run(node, "/usr/bin/systemctl enable nfsserver");
+		node.runOrFail("/etc/init.d/nfsserver start")
+		node.runOrFail("/usr/bin/systemctl enable nfsserver");
 	else:
-		nfs_run(node, "insserv -d nfsserver");
-		nfs_run(node, "/etc/init.d/nfsserver start")
+		node.runOrFail("insserv -d nfsserver");
+		node.runOrFail("/etc/init.d/nfsserver start")
 
 
 	# Help: add the two clients to the server's hosts file
-	nfs_add_hostsfile(node, client1.ipaddr, "client1.testing.opensuse.org")
+	node.addHostEntry(client1.ipaddr, "client1.testing.opensuse.org")
 
 	if client2:
-		nfs_add_hostsfile(node, client2.ipaddr, "client2.testing.opensuse.org")
+		node.addHostEntry(client2.ipaddr, "client2.testing.opensuse.org")
 
 	journal.beginTest(None, "Check whether NFSv2 is enabled by default")
-	status = nfs_run(node, "cat /proc/fs/nfsd/versions")
+	status = node.runOrFail("cat /proc/fs/nfsd/versions")
 	if status and status.stdout.find("-2") >= 0:
 		journal.info("NFSv2 disabled on server by default");
 
 		journal.beginTest(None, "Enabling NFSv2 on server")
-		nfs_sysconfig_set(node, "MOUNTD_OPTIONS", "-V2")
-		nfs_sysconfig_set(node, "NFSD_OPTIONS", "-V2")
-		nfs_run(node, "rcnfsserver restart")
+		node.changeSysconfigVar("nfs", "MOUNTD_OPTIONS", "-V2")
+		node.changeSysconfigVar("nfs", "NFSD_OPTIONS", "-V2")
+		node.runOrFail("rcnfsserver restart")
 
 	journal.finishGroup()
 
@@ -214,8 +99,8 @@ def init_client(node):
 
 	nfs_init_common(node)
 
-	nfs_add_hostsfile(node, server.ipaddr, "nfs-server.testing.opensuse.org")
-	if not __nfs_run(node, "/usr/sbin/showmount -e nfs-server.testing.opensuse.org"):
+	node.addHostEntry(server.ipaddr, "nfs-server.testing.opensuse.org")
+	if not node.run("/usr/sbin/showmount -e nfs-server.testing.opensuse.org"):
 		journal.fatal("Unable to contact NFS server")
 		return False
 
@@ -226,14 +111,14 @@ def init_client(node):
 			journal.info("Unmounting dir left mounted from previous test run")
 			nfs_do_umount(node, dir);
 
-		if not __nfs_run(node, "test -d %s || mkdir -p %s" % (clientdir, clientdir)):
+		if not node.run("test -d %s || mkdir -p %s" % (clientdir, clientdir)):
 			journal.fatal( "Failed to set up NFS mount points")
 			return False
 
 	# nfs_write_idmap_conf(node)
 
 	# A simple start is not enough to make it start all helper services
-	if not __nfs_run(node, "/etc/init.d/nfs force-start"):
+	if not node.run("/etc/init.d/nfs force-start"):
 		journal.fatal("NFS start script exited with error")
 		return False;
 
@@ -249,14 +134,14 @@ def init_client(node):
 ##################################################################
 def nfs_init_common(node):
 	if node.run("test -x /usr/bin/systemctl"):
-		nfs_run(node, "/usr/bin/systemctl enable rpcbind.socket")
-		nfs_run(node, "/usr/bin/systemctl start rpcbind.socket")
+		node.runOrFail("/usr/bin/systemctl enable rpcbind.socket")
+		node.runOrFail("/usr/bin/systemctl start rpcbind.socket")
 	else:
-		nfs_run(node, "insserv -d rpcbind")
-		nfs_run(node, "/etc/init.d/rpcbind start")
+		node.runOrFail("insserv -d rpcbind")
+		node.runOrFail("/etc/init.d/rpcbind start")
 
 	# exercise your shift key, stop the firewall
-	nfs_run(node, "rcSuSEfirewall2 stop")
+	node.runOrFail("rcSuSEfirewall2 stop")
 
 
 ##################################################################
@@ -288,7 +173,7 @@ def nfs_write_exports(server, exports):
 		journal.failure("unable to upload exports file")
 		return False
 
-	if not nfs_run(server, "/etc/init.d/nfsserver reload"):
+	if not server.runOrFail("/etc/init.d/nfsserver reload"):
 		return False
 
 	journal.info("downloading exports file for comparison")
@@ -308,7 +193,7 @@ def nfs_write_verify_exports(server, exports):
 	journal.beginTest(None, "updating exports file on %s" % server.name)
 	if nfs_write_exports(server, exports):
 		journal.info("verifying visibility on the client side")
-		nfs_run(client1, "/usr/sbin/showmount -e %s" % server.ipaddr)
+		client1.runOrFail("/usr/sbin/showmount -e %s" % server.ipaddr)
 
 ##################################################################
 # Initialize server and clients
@@ -343,10 +228,10 @@ def __nfs_do_mount(client, servername, clientdir, serverdir, options = None):
 	else:
 		cmdline = "/bin/mount %s:%s %s" % (servername, serverdir, clientdir)
 
-	return __nfs_run(client, cmdline)
+	return client.run(cmdline)
 
 def __nfs_do_umount(client, clientdir):
-	rv = __nfs_run(client, "/bin/umount " + clientdir)
+	rv = client.run("/bin/umount " + clientdir)
 	if not rv and __nfs_is_mounted(client, clientdir):
 		import time
 
@@ -363,7 +248,7 @@ def __nfs_do_umount(client, clientdir):
 			journal.info("Sleeping for 10 seconds...")
 			time.sleep(10)
 			journal.info("Retrying unmount call")
-			__nfs_run(client, "/bin/umount " + clientdir)
+			client.run("/bin/umount " + clientdir)
 			retry -= 1
 
 		if retry < 0:
@@ -481,7 +366,7 @@ def __nfs_verify_readonly(client, filename, timeout = -1):
 
 	t0 = time.time();
 
-	if __nfs_run(client, "/bin/touch " + filename, timeout = timeout):
+	if client.run("/bin/touch " + filename, timeout = timeout):
 		journal.failure("file system should be read-only, but succeeded in creating file")
 		return False
 
@@ -498,7 +383,7 @@ def __nfs_verify_readonly(client, filename, timeout = -1):
 def nfs_verify_readonly(dir, options):
 	global client1, server
 
-	nfs_run(server, "/bin/rm -f " + __nfs_server_file(dir, "readonly-test"))
+	server.runOrFail("/bin/rm -f " + __nfs_server_file(dir, "readonly-test"))
 
 	if not nfs_do_mount(client1, server.ipaddr, dir, options):
 		return False
@@ -516,7 +401,7 @@ def nfs_verify_readonly(dir, options):
 def nfs_verify_readonly_slow(dir):
 	global client1, server
 
-	nfs_run(server, "/bin/rm -f " + __nfs_server_file(dir, "readonly-test"))
+	server.runOrFail("/bin/rm -f " + __nfs_server_file(dir, "readonly-test"))
 
 	# TCP mount, retry operation after 20 seconds, retry twice.
 	# This operation should time out after less than 60 seconds overall
@@ -537,7 +422,7 @@ def __nfs_verify_readwrite(client, filename, verifyuid, verifygid):
 
 	t0 = time.time();
 
-	if not __nfs_run(client, "/bin/touch " + filename):
+	if not client.run("/bin/touch " + filename):
 		journal.failure("file system should be read-write, but failed in creating file")
 		return False
 
@@ -569,7 +454,7 @@ def __nfs_verify_readwrite(client, filename, verifyuid, verifygid):
 def nfs_verify_readwrite(dir, options, verifyuid = -1, verifygid = -1):
 	global client1, server
 
-	nfs_run(server, "/bin/rm -f " + __nfs_server_file(dir, "readwrite-test"))
+	server.runOrFail("/bin/rm -f " + __nfs_server_file(dir, "readwrite-test"))
 
 	if not nfs_do_mount(client1, server.ipaddr, dir, options):
 		return False
@@ -636,10 +521,10 @@ def __nfs_ipv4_netmask(ipaddr, pfxlen):
 # file system
 ##################################################################
 def nfstool_run(client, args):
-	return nfs_run(client, nfstool + " " + args)
+	return client.runOrFail(nfstool + " " + args)
 
 def __nfstool_run(client, args):
-	return __nfs_run(client, nfstool + " " + args)
+	return client.run(nfstool + " " + args)
 
 def nfs_test_createfile(client, dir):
 
@@ -648,7 +533,7 @@ def nfs_test_createfile(client, dir):
 	# Open a file with O_CREAT.
 	journal.beginTest(None, "create file");
 	if nfstool_run(client1, "create-file " + tf):
-		__nfs_run(client1, "/bin/rm -f " + tf)
+		client1.run("/bin/rm -f " + tf)
 		journal.success()
 
 	# Open a file with O_CREAT|O_EXCL, twice.
@@ -659,37 +544,37 @@ def nfs_test_createfile(client, dir):
 	elif __nfstool_run(client1, "create-file -x " + tf):
 		journal.failure("Second file open with O_EXCL succeeded (should have failed)")
 
-	nfs_run(client1, "/bin/rm -f " + tf)
+	client1.runOrFail("/bin/rm -f " + tf)
 
 def nfs_test_writefile(client, dir):
 
 	tf = dir + "/testfile";
 
 	journal.beginTest(None, "write to file")
-	if not __nfs_run(client, "/bin/dd if=/dev/zero of=%s bs=1k count=4k" % tf):
+	if not client.run("/bin/dd if=/dev/zero of=%s bs=1k count=4k" % tf):
 		journal.failure("Failed to write to file")
 
-	nfs_run(client1, "/bin/rm -f " + tf)
+	client1.runOrFail("/bin/rm -f " + tf)
 
 def nfs_test_chown(client, dir):
 
 	tf = dir + "/testfile"
 
 	journal.beginTest(None, "change file's ownership")
-	if nfs_run(client, "touch " + tf):
-		nfs_run(client, "/bin/chown --changes nobody " + tf)
+	if client.runOrFail("touch " + tf):
+		client.runOrFail("/bin/chown --changes nobody " + tf)
 
-	nfs_run(client1, "/bin/rm -f " + tf)
+	client1.runOrFail("/bin/rm -f " + tf)
 
 def nfs_test_chmod(client, dir):
 
 	tf = dir + "/testfile"
 
 	journal.beginTest(None, "change file's permissions")
-	if nfs_run(client, "touch " + tf):
-		nfs_run(client, "/bin/chmod --changes 0600 " + tf)
+	if client.runOrFail("touch " + tf):
+		client.runOrFail("/bin/chmod --changes 0600 " + tf)
 
-	nfs_run(client1, "/bin/rm -f " + tf)
+	client1.runOrFail("/bin/rm -f " + tf)
 
 def nfs_test_silly_rename(client, dir):
 
@@ -699,14 +584,14 @@ def nfs_test_silly_rename(client, dir):
 	journal.beginTest(None, "Verify silly-rename semantics")
 	journal.info("Open dst, rename src to dst, verify both files")
 	nfstool_run(client, "silly-rename %s %s" % (src, dst))
-	nfs_run(client1, "/bin/rm -f " + src)
-	nfs_run(client1, "/bin/rm -f " + dst)
+	client1.runOrFail("/bin/rm -f " + src)
+	client1.runOrFail("/bin/rm -f " + dst)
 
 	journal.beginTest(None, "Verify silly-rename semantics #2")
 	journal.info("Open dst, rename src to dst, verify both files. Leave src open the whole time")
 	nfstool_run(client, "silly-rename -x %s %s" % (src, dst))
-	nfs_run(client1, "/bin/rm -f " + src)
-	nfs_run(client1, "/bin/rm -f " + dst)
+	client1.runOrFail("/bin/rm -f " + src)
+	client1.runOrFail("/bin/rm -f " + dst)
 
 def nfs_test_silly_unlink(client, dir):
 
@@ -715,7 +600,7 @@ def nfs_test_silly_unlink(client, dir):
 	journal.beginTest(None, "Verify silly-unlink semantics")
 	journal.info("Open testfile, unlink it, verify content")
 	nfstool_run(client, "silly-unlink " + tf)
-	nfs_run(client1, "/bin/rm -f " + tf)
+	client1.runOrFail("/bin/rm -f " + tf)
 
 def nfs_test_socket(client, dir):
 
@@ -723,7 +608,7 @@ def nfs_test_socket(client, dir):
 
 	journal.beginTest(None, "Verify socket creation")
 	nfstool_run(client, "create-special -t socket -m 0644 " + tf)
-	nfs_run(client1, "/bin/rm -f " + tf)
+	client1.runOrFail("/bin/rm -f " + tf)
 
 def nfs_test_fifo(client, dir):
 
@@ -731,7 +616,7 @@ def nfs_test_fifo(client, dir):
 
 	journal.beginTest(None, "Verify FIFO creation")
 	nfstool_run(client, "create-special -t fifo -m 0644 " + tf)
-	nfs_run(client1, "/bin/rm -f " + tf)
+	client1.runOrFail("/bin/rm -f " + tf)
 
 def nfs_test_chrdev(client, dir):
 
@@ -739,7 +624,7 @@ def nfs_test_chrdev(client, dir):
 
 	journal.beginTest(None, "Verify chardev creation")
 	nfstool_run(client, "create-special -t chrdev -m 0644 -d 1:3 " + tf)
-	nfs_run(client1, "/bin/rm -f " + tf)
+	client1.runOrFail("/bin/rm -f " + tf)
 
 def nfs_test_blkdev(client, dir):
 
@@ -747,7 +632,7 @@ def nfs_test_blkdev(client, dir):
 
 	journal.beginTest(None, "Verify blockdev creation")
 	nfstool_run(client, "create-special -t blkdev -m 0600 -d 7:0 " + tf)
-	nfs_run(client1, "/bin/rm -f " + tf)
+	client1.runOrFail("/bin/rm -f " + tf)
 
 def nfs_test_symlink(client, dir):
 
@@ -760,17 +645,17 @@ def nfs_test_symlink(client, dir):
 		journal.failure("unable to write target file")
 		return False
 
-	if nfs_run(client, "/bin/ln -s %s %s" % (basename, link)):
+	if client.runOrFail("/bin/ln -s %s %s" % (basename, link)):
 		st = client.recvfile(link)
 		if not st or str(st.buffer) != "imadoofus":
 			journal.failure("problem verifying file content through symlink")
 
 	journal.beginTest(None, "Verify symlink operation #2")
-	if __nfs_run(client, "/bin/ln -s randomlink %s" % link):
+	if client.run("/bin/ln -s randomlink %s" % link):
 		journal.failure("/bin/ln -s on an existing symlink did not fail")
 
-	nfs_run(client1, "/bin/rm -f " + link)
-	nfs_run(client1, "/bin/rm -f " + target)
+	client1.runOrFail("/bin/rm -f " + link)
+	client1.runOrFail("/bin/rm -f " + target)
 
 	# TBD: verify behavior of symlinks pointing outside the exported directory
 
@@ -785,17 +670,17 @@ def nfs_test_hardlink(client, dir):
 		journal.failure("unable to write target file")
 		return False
 
-	if nfs_run(client, "/bin/ln %s %s" % (target, link)):
+	if client.runOrFail("/bin/ln %s %s" % (target, link)):
 		st = client.recvfile(link)
 		if not st or str(st.buffer) != "imadoofus":
 			journal.failure("problem verifying file content through hardlink")
 
 	journal.beginTest(None, "Verify hardlink operation #2")
-	if __nfs_run(client, "/bin/ln %s %s" % (target, link)):
+	if client.run("/bin/ln %s %s" % (target, link)):
 		journal.failure("/bin/ln on an existing hardlink did not fail")
 
-	nfs_run(client1, "/bin/rm -f " + link)
-	nfs_run(client1, "/bin/rm -f " + target)
+	client1.runOrFail("/bin/rm -f " + link)
+	client1.runOrFail("/bin/rm -f " + target)
 
 
 ##################################################################
@@ -940,7 +825,7 @@ def nfs_test_wait_grace(node, tf):
 	# Before running all the locking tests, make sure that the grace period has
 	# expired.
 	journal.beginTest("grace-wait", "Make sure the locking grace period has expired")
-	if __nfs_run(node, "/usr/bin/nfs lock -t 1 " + tf, 120):
+	if node.run("/usr/bin/nfs lock -t 1 " + tf, 120):
 		journal.success();
 		ret = True
 	else:
@@ -955,28 +840,28 @@ def nfs_test_posix_lock1(tf):
 	global client1
 
 	journal.beginTest(None, "Grab a shared POSIX lock")
-	nfs_run(client1, "/usr/bin/nfs lock -t 1 " + tf)
+	client1.runOrFail("/usr/bin/nfs lock -t 1 " + tf)
 
 def nfs_test_posix_lock2(tf):
 
 	global client1
 
 	journal.beginTest(None, "Grab an exclusive POSIX lock")
-	nfs_run(client1, "/usr/bin/nfs lock -t 1 -x " + tf)
+	client1.runOrFail("/usr/bin/nfs lock -t 1 -x " + tf)
 
 def nfs_test_posix_lock3(tf):
 
 	global client1
 
 	journal.beginTest(None, "Lock and unlock, then make sure GETLK reports no more locks")
-	nfs_run(client1, "/usr/bin/nfs lock -t 1 -u " + tf)
+	client1.runOrFail("/usr/bin/nfs lock -t 1 -u " + tf)
 
 def nfs_test_posix_lock4(tf):
 
 	global client1
 
 	journal.beginTest(None, "Grab a sequence of adjacent locks, unlock whole range, and make all locks are gone")
-	nfs_run(client1, "/usr/bin/nfs lock -t 1 -s -u " + tf)
+	client1.runOrFail("/usr/bin/nfs lock -t 1 -s -u " + tf)
 
 def nfs_test_posix_lock5(tf):
 
@@ -992,7 +877,7 @@ def nfs_test_posix_lock5(tf):
 	journal.beginTest(None, "Grab shared POSIX locks on two clients")
 
 	# Grab one lock on client1, holding that for 5 seconds
-	if not nfs_run_background(client1, "/usr/bin/nfs lock -t 5 " + tf):
+	if not client1.runBackground("/usr/bin/nfs lock -t 5 " + tf):
 		journal.failure("Unable to run command in the background")
 
 	# Wait for 1 second to make sure this guy has really had the time to grab the
@@ -1001,12 +886,12 @@ def nfs_test_posix_lock5(tf):
 
 	# We grab a second shared lock on client2, and hold that for 1 second.
 	# In case we block for some reason, we run the command with a 3 second
-	if not __nfs_run(client2, "/usr/bin/nfs lock -t 1 " + tf, timeout = 3):
+	if not client2.run("/usr/bin/nfs lock -t 1 " + tf, timeout = 3):
 		journal.failure("Failed to grab shared lock on second client")
 		client1.waitAll()
 		return
 
-	if not nfs_wait(client1):
+	if not client1.wait():
 		journal.failure("Failed to grab shared lock on first client")
 		return
 
@@ -1026,7 +911,7 @@ def nfs_test_posix_lock6(tf):
 	journal.beginTest(None, "Grab exclusive POSIX locks on two clients")
 
 	# Grab one lock on client1, holding that for 10 seconds
-	if not nfs_run_background(client1, "/usr/bin/nfs lock -t 10 -x " + tf):
+	if not client1.runBackground("/usr/bin/nfs lock -t 10 -x " + tf):
 		journal.failure("Unable to run command in the background")
 		return
 
@@ -1035,7 +920,7 @@ def nfs_test_posix_lock6(tf):
 	time.sleep(1)
 
 	journal.info("Try to grab shared lock on second client, nonblocking - this should fail")
-	if __nfs_run(client2, "/usr/bin/nfs lock -t 1 -n " + tf, timeout = 1):
+	if client2.run("/usr/bin/nfs lock -t 1 -n " + tf, timeout = 1):
 		journal.failure("Grabbing the shared lock on second client succeeded!")
 		client1.waitAll()
 		return
@@ -1043,12 +928,12 @@ def nfs_test_posix_lock6(tf):
 	journal.info("Unable to grab lock on second client: good")
 
 	journal.info("Try to grab shared lock on second client, blocking - this should block, then succeed")
-	if __nfs_run(client2, "/usr/bin/nfs lock -t 1 " + tf, timeout = 20):
+	if client2.run("/usr/bin/nfs lock -t 1 " + tf, timeout = 20):
 		journal.failure("Blocking lock never acquired")
 		client1.waitAll()
 		return
 
-	if not nfs_wait(client1):
+	if not client1.wait():
 		journal.failure("Failed to grab exclusive lock on first client?!")
 		return
 
@@ -1059,14 +944,14 @@ def nfs_test_flock1(tf):
 	global client1
 
 	journal.beginTest(None, "Grab a shared FLOCK lock")
-	nfs_run(client1, "/usr/bin/nfs lock -t 1 -b " + tf)
+	client1.runOrFail("/usr/bin/nfs lock -t 1 -b " + tf)
 
 def nfs_test_flock2(tf):
 
 	global client1
 
 	journal.beginTest(None, "Grab a exclusive FLOCK lock")
-	nfs_run(client1, "/usr/bin/nfs lock -t 1 -x -b " + tf)
+	client1.runOrFail("/usr/bin/nfs lock -t 1 -x -b " + tf)
 
 def nfs_test_flock3(tf):
 
@@ -1082,7 +967,7 @@ def nfs_test_flock3(tf):
 	journal.beginTest(None, "Grab shared FLOCK locks on two clients")
 
 	# Grab one lock on client1, holding that for 5 seconds
-	if not nfs_run_background(client1, "/usr/bin/nfs lock -t 5 -b " + tf):
+	if not client1.runBackground("/usr/bin/nfs lock -t 5 -b " + tf):
 		journal.failure("Unable to run command in the background")
 
 	# Wait for 1 second to make sure this guy has really had the time to grab the
@@ -1091,12 +976,12 @@ def nfs_test_flock3(tf):
 
 	# We grab a second shared lock on client2, and hold that for 1 second.
 	# In case we block for some reason, we run the command with a 3 second
-	if not __nfs_run(client2, "/usr/bin/nfs lock -t 1 -b " + tf, timeout = 3):
+	if not client2.run("/usr/bin/nfs lock -t 1 -b " + tf, timeout = 3):
 		journal.failure("Failed to grab shared lock on second client")
 		client1.waitAll()
 		return
 
-	if not nfs_wait(client1):
+	if not client1.wait():
 		journal.failure("Failed to grab shared lock on first client")
 		return
 
@@ -1146,7 +1031,7 @@ def nfs_test_locking():
 		else:
 			journal.warning("Skipping all locking tests")
 
-		nfs_run(client1, "rm -f " + testfile)
+		client1.runOrFail("rm -f " + testfile)
 
 		nfs_do_umount(client1, "dir1")
 		nfs_do_umount(client2, "dir1")
@@ -1162,17 +1047,17 @@ def nfs_test_cto(tf):
 	journal.beginTest("cto", "Test close-to-open consistency")
 
 	journal.info("On client1, write 'frank' to the testfile");
-	__nfs_run(client1, "echo -n frank >" + tf)
+	client1.run("echo -n frank >" + tf)
 
 	journal.info("On client2, append 'zappa' to the testfile");
-	__nfs_run(client2, "echo -n zappa >>" + tf)
+	client2.run("echo -n zappa >>" + tf)
 
 	# Expect the *first* client to revalidate attrs when reopening
 	# the file, and discard its cache. IOW the current file content, 
 	# which is "frankzappa", should be visible on the first client,
 	# too.
 	journal.info("Read the test file on client1")
-	status = __nfs_run(client1, "cat " + tf)
+	status = client1.run("cat " + tf)
 	if not(status):
 		journal.failure("unable to read testfile on client1")
 	else:
@@ -1201,7 +1086,7 @@ def __nfs_test_lock_coherence(tf, mode):
 	command = "/usr/bin/nfs mmap2 -c 16 -i 32 -t 120 %s " % mode
 
 	# Clean up from previous runs
-	if not nfs_run(client1, "rm -f " + tf):
+	if not client1.runOrFail("rm -f " + tf):
 		journal.info("This should not have failed; something's really wrong")
 		return False
 
@@ -1209,7 +1094,7 @@ def __nfs_test_lock_coherence(tf, mode):
 	# The -w option instructs the challenger to sleep for 500ms
 	# while waiting for the responder to catch up
 	journal.info("Starting the challenger on client1")
-	if not nfs_run_background(client1, command + "-w 500 " + tf):
+	if not client1.runBackground(command + "-w 500 " + tf):
 		return False
 
 	# The challenger creates the test file, then locks it
@@ -1218,7 +1103,7 @@ def __nfs_test_lock_coherence(tf, mode):
 	journal.info("Waiting for challenger to start")
 	ready = False
 	for n in range(0, 10):
-		if __nfs_run(client1, "test -f " + tf):
+		if client1.run("test -f " + tf):
 			journal.info("ready!")
 			ready = True
 			break
@@ -1234,11 +1119,11 @@ def __nfs_test_lock_coherence(tf, mode):
 	# On client2, start the responder.
 	# The -r option puts the tool in responder mode
 	journal.info("Starting the responder on client2")
-	if not __nfs_run(client2, command + "-r " + tf):
+	if not client2.run(command + "-r " + tf):
 		journal.failure("responder returned error")
 		return False
 
-	status = nfs_wait(client1)
+	status = client1.wait()
 	if not status:
 		journal.failure("challenger exited with error")
 		return False
@@ -1247,13 +1132,13 @@ def __nfs_test_lock_coherence(tf, mode):
 
 def nfs_locktest_cleanup(tf):
 	# Something went wrong. Clean up
-	__nfs_run(client1, "/sbin/killproc -9 /usr/bin/nfs")
+	client1.run("/sbin/killproc -9 /usr/bin/nfs")
 	client1.waitAll()
 
-	__nfs_run(client2, "/sbin/killproc -9 /usr/bin/nfs")
+	client2.run("/sbin/killproc -9 /usr/bin/nfs")
 	client2.waitAll()
 
-	__nfs_run(client1, "rm -f " + tf)
+	client1.run("rm -f " + tf)
 
 def nfs_test_lock_coherence(tf):
 
@@ -1278,7 +1163,7 @@ be provided by using fsync/msync.
 ''')
 
 	# Turn on lockd debugging
-	# __nfs_run(client2, "/usr/sbin/rpcdebug -m nlm all")
+	# client2.run("/usr/sbin/rpcdebug -m nlm all")
 
 	journal.beginTest(None, "locked read/write coherence")
 	if not __nfs_test_lock_coherence(tf, ""):
@@ -1296,7 +1181,7 @@ be provided by using fsync/msync.
 	if not __nfs_test_lock_coherence(tf, "-m -s"):
 		nfs_locktest_cleanup(tf)
 
-	# __nfs_run(client2, "/usr/sbin/rpcdebug -m nlm -c all")
+	# client2.run("/usr/sbin/rpcdebug -m nlm -c all")
 
 def nfs_test_coherence():
 
@@ -1332,7 +1217,7 @@ def nfs_test_coherence():
 		else:
 			journal.warning("Skipping all coherence tests")
 
-		nfs_run(client1, "rm -f " + testfile)
+		client1.runOrFail("rm -f " + testfile)
 
 		nfs_do_umount(client1, "dir1")
 		nfs_do_umount(client2, "dir1")
