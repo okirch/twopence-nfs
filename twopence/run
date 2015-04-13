@@ -1209,8 +1209,7 @@ def __nfs_test_lock_coherence(tf, mode):
 	# The -w option instructs the challenger to sleep for 500ms
 	# while waiting for the responder to catch up
 	journal.info("Starting the challenger on client1")
-	cmd = twopence.Command(command + "-w 500 " + tf, background = 1)
-	if not nfs_run_background(client1, cmd):
+	if not nfs_run_background(client1, command + "-w 500 " + tf):
 		return False
 
 	# The challenger creates the test file, then locks it
