@@ -822,7 +822,7 @@ def nfs_test_wait_grace(node, tf):
 	# Before running all the locking tests, make sure that the grace period has
 	# expired.
 	journal.beginTest("grace-wait", "Make sure the locking grace period has expired")
-	if node.run("/usr/bin/nfs lock -t 1 " + tf, 120):
+	if node.run("/usr/bin/nfs lock -t 1 " + tf, timeout = 120):
 		journal.success();
 		ret = True
 	else:
