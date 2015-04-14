@@ -1641,7 +1641,8 @@ nfslock_coherence(int argc, char **argv)
 			opt_timeout = atoi(optarg);
 			break;
 		case 'w':
-			/* This is how long we will sleep between attempts to verify the response */
+			/* This is how long the challenger will sleep (on average) while holding
+			 * the lock */
 			opt_wait_ms = atoi(optarg);
 			break;
 		default:
@@ -1702,6 +1703,9 @@ nfslock_coherence(int argc, char **argv)
 		while (opt_iterations--) {
 			struct mmap2_record *current;
 
+			if (mmap2_timeout)
+				goto out;
+
 			if (!(current = mf->read(mf, index)))
 				goto out;
 
@@ -1737,10 +1741,27 @@ nfslock_coherence(int argc, char **argv)
 		 *    - unlock current slot
 		 *    - make slot N + 1 the current one
 		 */
+		printf("Locking record 1 and waiting for challenger: ");
+		fflush(stdout);
 		if (mmap2_lock_record(mf, index) < 0)
 			goto out;
+
+		while (prev == 0 && !mmap2_is_record_locked(mf, prev)) {
+			write(2, ".", 1);
+			if (usleep(100000) < 0) {
+				if (mmap2_timeout)
+					goto out;
+				perror("usleep");
+				goto out;
+			}
+		}
+		printf(" ready!\n");
+
 		while (opt_iterations--) {
 			struct mmap2_record *current;
+
+			if (mmap2_timeout)
+				goto out;
 
 			if (!(current = mf->read(mf, index)))
 				goto out;
@@ -1757,17 +1778,10 @@ nfslock_coherence(int argc, char **argv)
 				goto out;
 			write(2, "+", 1);
 
-			/* Wait for the responder to lock the previous record,
-			 * then proceed. */
-			while (!mmap2_is_record_locked(mf, prev)) {
-				write(2, ".", 1);
-				if (usleep(opt_wait_ms * 1000) < 0) {
-					if (mmap2_timeout)
-						goto out;
-					perror("usleep");
-					goto out;
-				}
-			}
+			/* Wait opt_wait_ms on average.
+			 * Randomly pick a value from the range [0.5 * wait_ms, 1.5 * wait_ms]
+			 */
+			usleep((opt_wait_ms / 2 + (random() % opt_wait_ms)) * 1000);
 
 			/* Locking the next record here does two things:
 			 *  a) it prevents the responder from overtaking us
@@ -1792,6 +1806,10 @@ nfslock_coherence(int argc, char **argv)
 
 out:	
 	write(2, "\n", 1);
+
+	if (mmap2_timeout)
+		printf("Timed out\n");
+
 	if (opt_delay_report && mf->num_locks_acquired) {
 		printf("%u locks acquired.\n", mf->num_locks_acquired);
 		if (mf->lock_delays[0] == mf->num_locks_acquired) {
