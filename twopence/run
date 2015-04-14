@@ -870,7 +870,7 @@ def nfs_test_nfsv4_grace(grace_period = 90):
 
 	journal.beginTest(None, "Checking for NFSv4 grace period")
 	server.run("/bin/rm -f " + server_file)
-	if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
+	if not nfs_do_mount(client1, server.ipaddr, "dir1", "vers=4"):
 		return False
 
 	t0 = time.time();
