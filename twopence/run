@@ -58,6 +58,7 @@ def init_server(node):
 	node.runOrFail("/bin/rm -rf /srv/nfs/dir{1,2,3,4}")
 	node.runOrFail("/bin/mkdir -p -m 777 /srv/nfs/dir{1,2,3,4}")
 
+	node.lastNFSRestart = 0
 
 	if node.run("test -x /usr/bin/systemctl"):
 		use_systemd = True
@@ -85,6 +86,29 @@ def init_server(node):
 		node.runOrFail("rcnfsserver restart")
 
 	journal.finishGroup()
+
+##################################################################
+# Restart the NFS server.
+# This records the time of the restart, so that we know how
+# long to wait until NFSv4 grace period expires
+##################################################################
+def nfs_server_restart(node):
+	import time
+
+	node.lastNFSRestart = time.time();
+	node.run("rcnfsserver restart")
+
+def nfs_server_wait_grace(node, grace_period = 90):
+	import time
+
+	if not node.lastNFSRestart:
+		return
+
+	elapsed = time.time() - node.lastNFSRestart;
+	if elapsed < grace_period:
+		nsleep = grace_period - elapsed
+		journal.info("Wait for NFSv4 grace period to elapse - sleeping for %u seconds" % nsleep)
+		time.sleep(nsleep)
 
 ##################################################################
 # Initialize an NFS client node
@@ -737,8 +761,15 @@ def nfs_test_exports():
 	nfs_write_verify_exports(server, exports_data)
 	nfs_verify_readonly_slow("dir1")
 
-	for options in [None, "vers=2", "vers=3", "vers=4"]:
-		# Better safe than sorry
+	# We run the NFSV4 tests last - hopefully we will be past the grace period then.
+	# If not, we're prepared to wait for the remainder of the grace period to expire
+	for version in [2, 3, 4]:
+		if version == 4:
+			nfs_server_wait_grace(server)
+
+		# Build the NFS mount options.
+		# Always include intr so we're able to kill stuck processes
+		options = "vers=%u" % version
 		options = nfs_join_mount_options(options, "intr");
 
 		journal.beginTest(None, "verify that dir1 is exported read-only (mounted with options %s)" % options)
@@ -812,6 +843,52 @@ def nfs_test_fileops():
 		nfs_test_hardlink(client1, clientdir)
 
 		nfs_do_umount(client1, "dir1")
+
+##################################################################
+# First things first - check that the NFSv4 grace period of
+# 90 seconds is enforced
+##################################################################
+def nfs_test_nfsv4_grace(grace_period = 90):
+	global client1, client2, server
+	import time
+
+	journal.beginGroup("nfsv4-grace")
+
+	journal.beginTest(None, "restarting NFS daemon")
+	nfs_server_restart(server)
+
+	end_of_grace_period = server.lastNFSRestart + grace_period
+
+	exports_data = '''
+/srv/nfs/dir1   *(rw,no_root_squash,no_subtree_check)
+'''
+
+	nfs_write_verify_exports(server, exports_data)
+
+	server_file = __nfs_server_file("dir1", "testfile")
+	client_file = __nfs_client_file("dir1", "testfile")
+
+	journal.beginTest(None, "Checking for NFSv4 grace period")
+	server.run("/bin/rm -f " + server_file)
+	if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
+		return False
+
+	t0 = time.time();
+	if not client1.run("/bin/touch " + client_file, timeout = 180):
+		journal.failure("failed to create file")
+		nfs_do_umount(client1, "dir1")
+		return False
+	t1 = time.time()
+
+	nfs_do_umount(client1, "dir1")
+
+	journal.info("Command took %u seconds to complete" % (t1 - t0))
+	if t1 < end_of_grace_period - 1:
+		journal.info("Command returned %u seconds too early" % (end_of_grace_period - t1))
+		journal.failure("Server does not seem to enforce NFSv4 grace period")
+	else:
+		journal.success("Looks like the server enforces the grace period")
+		
 
 ##################################################################
 # File locking tests
@@ -1251,6 +1328,7 @@ def main():
 	nfs_test_mount()
 	nfs_test_exports()
 	nfs_test_fileops()
+	nfs_test_nfsv4_grace()
 	nfs_test_locking()
 	nfs_test_coherence()
 
