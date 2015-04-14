@@ -1242,6 +1242,8 @@ out:	if (res)
 
 struct mmap2_file {
 	int			fd;
+
+	unsigned int		record_size;
 	unsigned int		size;
 	unsigned int		nslots;
 
@@ -1261,7 +1263,6 @@ struct mmap2_record {
 };
 
 static int			mmap2_timeout = 0;
-static unsigned int		mmap2_record_size;
 static const double		mmap2_time_granularity = 0.1;
 
 static inline unsigned int
@@ -1280,8 +1281,8 @@ __mmap2_lock_record(struct mmap2_file *mf, unsigned int slot, int type)
 	// printf("About to %slock slot %u\n", (type == F_UNLCK)? "un" : "", slot);
 	fl.l_type = type;
 	fl.l_whence = SEEK_SET;
-	fl.l_start = slot * mmap2_record_size;
-	fl.l_len = mmap2_record_size;
+	fl.l_start = slot * mf->record_size;
+	fl.l_len = mf->record_size;
 
 	gettimeofday(&t0, NULL);
 	if (fcntl(mf->fd, F_SETLKW, &fl) < 0) {
@@ -1321,8 +1322,8 @@ mmap2_is_record_locked(struct mmap2_file *mf, unsigned int slot)
 	memset(&fl, 0, sizeof(fl));
 //	fl.l_type = F_UNLCK;
 //	fl.l_whence = SEEK_SET;
-	fl.l_start = slot * mmap2_record_size;
-	fl.l_len = mmap2_record_size;
+	fl.l_start = slot * mf->record_size;
+	fl.l_len = mf->record_size;
 	if (fcntl(mf->fd, F_GETLK, &fl) < 0) {
 		fprintf(stderr, "fcntl(F_GETLK): %m\n");
 		return 0;
@@ -1340,23 +1341,17 @@ mmap2_unlock_record(struct mmap2_file *mf, unsigned int slot)
  * mmap case: quite easy
  */
 static struct mmap2_record *
-__mmap2_record(char *base_addr, unsigned int slot)
-{
-	return (struct mmap2_record *) (base_addr + slot * mmap2_record_size);
-}
-
-static struct mmap2_record *
 mmap2_read_mapped(struct mmap2_file *mf, unsigned int slot)
 {
-	/* mmap case is easy */
-	return __mmap2_record(mf->mapped, slot);
+	/* Just return the address of the mapped record */
+	return (struct mmap2_record *) (mf->mapped + slot * mf->record_size);
 }
 
 static int
 mmap2_write_mapped(struct mmap2_file *mf, unsigned int slot, struct mmap2_record *record)
 {
-	/* mmap case is easy */
-	if (mf->sync && msync(record, mmap2_record_size, MS_SYNC | MS_INVALIDATE) < 0) {
+	/* In the sync case, call msync(), otherwise this is a no-op */
+	if (mf->sync && msync(record, mf->record_size, MS_SYNC | MS_INVALIDATE) < 0) {
 		fprintf(stderr, "synching record failed (addr=%p): %m\n", record);
 		return -1;
 	}
@@ -1368,8 +1363,6 @@ mmap2_open_mapped(struct mmap2_file *mf, const char *pathname, int explicit_sync
 {
 	struct stat stb;
 
-	memset(mf, 0, sizeof(*mf));
-	mf->fd = -1;
 	mf->sync = explicit_sync;
 
 	if (nslots != 0) {
@@ -1379,7 +1372,7 @@ mmap2_open_mapped(struct mmap2_file *mf, const char *pathname, int explicit_sync
 		}
 
 		mf->nslots = nslots;
-		mf->size = nslots * mmap2_record_size;
+		mf->size = nslots * mf->record_size;
 		if (ftruncate(mf->fd, mf->size) < 0) {
 			fprintf(stderr, "unable to resize file to %u bytes: %m", mf->size);
 			return -1;
@@ -1396,7 +1389,7 @@ mmap2_open_mapped(struct mmap2_file *mf, const char *pathname, int explicit_sync
 		}
 
 		mf->size = stb.st_size;
-		mf->nslots = mf->size / mmap2_record_size;
+		mf->nslots = mf->size / mf->record_size;
 	}
 
 	mf->mapped = mmap(NULL, mf->size, PROT_WRITE|PROT_READ, MAP_SHARED, mf->fd, 0);
@@ -1417,7 +1410,7 @@ mmap2_read_stdio(struct mmap2_file *mf, unsigned int slot)
 	static struct mmap2_record buffer;
 	int n;
 
-	if (lseek(mf->fd, slot * mmap2_record_size, SEEK_SET) < 0) {
+	if (lseek(mf->fd, slot * mf->record_size, SEEK_SET) < 0) {
 		fprintf(stderr, "cannot seek to slot %u: %m\n", slot);
 		return NULL;
 	}
@@ -1440,7 +1433,7 @@ mmap2_write_stdio(struct mmap2_file *mf, unsigned int slot, struct mmap2_record 
 {
 	int n;
 
-	if (lseek(mf->fd, slot * mmap2_record_size, SEEK_SET) < 0) {
+	if (lseek(mf->fd, slot * mf->record_size, SEEK_SET) < 0) {
 		fprintf(stderr, "cannot seek to slot %u: %m\n", slot);
 		return -1;
 	}
@@ -1468,8 +1461,6 @@ mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int oflags, int ex
 {
 	struct stat stb;
 
-	memset(mf, 0, sizeof(*mf));
-	mf->fd = -1;
 	mf->sync = explicit_sync;
 
 	oflags |= O_RDWR;
@@ -1480,7 +1471,7 @@ mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int oflags, int ex
 		}
 
 		mf->nslots = nslots;
-		mf->size = nslots * mmap2_record_size;
+		mf->size = nslots * mf->record_size;
 		if (ftruncate(mf->fd, mf->size) < 0) {
 			fprintf(stderr, "unable to resize file to %u bytes: %m", mf->size);
 			return -1;
@@ -1497,7 +1488,7 @@ mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int oflags, int ex
 		}
 
 		mf->size = stb.st_size;
-		mf->nslots = mf->size / mmap2_record_size;
+		mf->nslots = mf->size / mf->record_size;
 	}
 
 	mf->read = mmap2_read_stdio;
@@ -1509,6 +1500,12 @@ mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int oflags, int ex
 static int
 __mmap2_open(struct mmap2_file *mf, const char *mode, const char *name, unsigned int nslots)
 {
+	mf->fd = -1;
+
+	/* For now, we always make records page aligned. This allows us to use
+	 * different access modes for challenger and responder */
+	mf->record_size = getpagesize();
+
 	if (!strcmp(mode, "stdio"))
 		return mmap2_open_stdio(mf, name, 0, 0, nslots);
 	if (!strcmp(mode, "stdio-sync"))
@@ -1666,10 +1663,8 @@ nfslock_coherence(int argc, char **argv)
 	 */
 	if (opt_responder)
 		opt_count = 0;
-	else if (opt_count <= 4)
-		opt_count = 4;
-
-	mmap2_record_size = getpagesize();
+	else if (opt_count <= 3)
+		opt_count = 3;
 
 	if (opt_mode == NULL)
 		opt_mode = "stdio";
