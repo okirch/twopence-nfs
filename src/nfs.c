@@ -1267,6 +1267,7 @@ __mmap2_lock_record(int fd, unsigned int slot, int type)
 	unsigned int elapsed;
 	struct flock fl;
 
+	// printf("About to %slock slot %u\n", (type == F_UNLCK)? "un" : "", slot);
 	fl.l_type = type;
 	fl.l_whence = SEEK_SET;
 	fl.l_start = slot * mmap2_record_size;
@@ -1352,13 +1353,13 @@ mmap2_write_mapped(struct mmap2_file *mf, unsigned int slot, struct mmap2_record
 }
 
 static int
-mmap2_open_mapped(struct mmap2_file *mf, const char *pathname, int do_sync, unsigned int nslots)
+mmap2_open_mapped(struct mmap2_file *mf, const char *pathname, int explicit_sync, unsigned int nslots)
 {
 	struct stat stb;
 
 	memset(mf, 0, sizeof(*mf));
 	mf->fd = -1;
-	mf->sync = do_sync;
+	mf->sync = explicit_sync;
 
 	if (nslots != 0) {
 		if ((mf->fd = open(pathname, O_RDWR|O_CREAT|O_TRUNC, 0644)) < 0) {
@@ -1452,16 +1453,17 @@ mmap2_write_stdio(struct mmap2_file *mf, unsigned int slot, struct mmap2_record 
 }
 
 static int
-mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int do_sync, unsigned int nslots)
+mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int oflags, int explicit_sync, unsigned int nslots)
 {
 	struct stat stb;
 
 	memset(mf, 0, sizeof(*mf));
 	mf->fd = -1;
-	mf->sync = do_sync;
+	mf->sync = explicit_sync;
 
+	oflags |= O_RDWR;
 	if (nslots != 0) {
-		if ((mf->fd = open(pathname, O_RDWR|O_CREAT|O_TRUNC, 0644)) < 0) {
+		if ((mf->fd = open(pathname, oflags|O_CREAT|O_TRUNC, 0644)) < 0) {
 			perror(pathname);
 			return -1;
 		}
@@ -1473,7 +1475,7 @@ mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int do_sync, unsig
 			return -1;
 		}
 	} else {
-		if ((mf->fd = open(pathname, O_RDWR, 0644)) < 0) {
+		if ((mf->fd = open(pathname, oflags, 0644)) < 0) {
 			perror(pathname);
 			return -1;
 		}
@@ -1493,13 +1495,54 @@ mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int do_sync, unsig
 	return 0;
 }
 
+static int
+__mmap2_open(struct mmap2_file *mf, const char *mode, const char *name, unsigned int nslots)
+{
+	if (!strcmp(mode, "stdio"))
+		return mmap2_open_stdio(mf, name, 0, 0, nslots);
+	if (!strcmp(mode, "stdio-sync"))
+		return mmap2_open_stdio(mf, name, 0, 1, nslots);
+	if (!strcmp(mode, "stdio-direct"))
+		return mmap2_open_stdio(mf, name, O_DIRECT, 0, nslots);
+	if (!strcmp(mode, "mapped"))
+		return mmap2_open_mapped(mf, name, 1, nslots);
+
+	fprintf(stderr, "Unknown file access mode \"%s\"\n", mode);
+	return -1;
+}
+
+static void
+__mmap2_close(struct mmap2_file *mf)
+{
+	if (mf->mapped) {
+		munmap(mf->mapped, mf->size);
+		mf->mapped = NULL;
+	}
+	if (mf->fd >= 0) {
+		close(mf->fd);
+		mf->fd = -1;
+	}
+}
+
 void
 mmap2_close(struct mmap2_file *mf)
 {
-	if (mf->mapped)
-		munmap(mf->mapped, mf->size);
-	if (mf->fd >= 0)
-		close(mf->fd);
+	__mmap2_close(mf);
+	free(mf);
+}
+
+static struct mmap2_file *
+mmap2_open(const char *mode, const char *name, unsigned int nslots)
+{
+	struct mmap2_file *mf;
+
+	mf = calloc(1, sizeof(*mf));
+	if (__mmap2_open(mf, mode, name, nslots) < 0) {
+		mmap2_close(mf);
+		return NULL;
+	}
+
+	return mf;
 }
 
 static void
@@ -1518,19 +1561,18 @@ __mmap2_timeout_handler(int sig)
 int
 nfslock_coherence(int argc, char **argv)
 {
+	const char *	opt_mode = NULL;
 	unsigned int 	opt_count = 0;
 	unsigned int	opt_iterations = 128;
 	int		opt_responder = 0;
-	int		opt_sync = 0;
 	int		opt_timeout = 0;
 	int		opt_wait_ms = 100;
-	int		opt_mmap = 0;
 	int		opt_delay_report = 0;
 	int		c, res = 1;
-	struct mmap2_file mf;
+	struct mmap2_file *mf;
 	char		*name;
 
-	while ((c = getopt(argc, argv, "c:di:mrst:w:")) != -1) {
+	while ((c = getopt(argc, argv, "c:di:M:rt:w:")) != -1) {
 		switch (c) {
 		case 'c':
 			opt_count = atoi(optarg);
@@ -1541,14 +1583,11 @@ nfslock_coherence(int argc, char **argv)
 		case 'i':
 			opt_iterations = atoi(optarg);
 			break;
-		case 'm':
-			opt_mmap = 1;
+		case 'M':
+			opt_mode = optarg;
 			break;
 		case 'r':
 			opt_responder = 1;
-			break;
-		case 's':
-			opt_sync = 1;
 			break;
 		case 't':
 			/* This is how long we will try overall before we give up */
@@ -1571,20 +1610,23 @@ nfslock_coherence(int argc, char **argv)
 
 	name = argv[optind];
 
+	/* In responder mode, we infer the number of slots by looking at the
+	 * file size.
+	 * In challenger mode, the minimum number of slots is 4.
+	 */
 	if (opt_responder)
 		opt_count = 0;
-	else if (opt_count <= 2)
-		opt_count = 2;
+	else if (opt_count <= 4)
+		opt_count = 4;
 
 	mmap2_record_size = getpagesize();
 
-	if (opt_mmap) {
-		if (mmap2_open_mapped(&mf, name, opt_sync, opt_count) < 0)
-			goto out;
-	} else {
-		if (mmap2_open_stdio(&mf, name, opt_sync, opt_count) < 0)
-			goto out;
-	}
+	if (opt_mode == NULL)
+		opt_mode = "stdio";
+
+	mf = mmap2_open(opt_mode, name, opt_count);
+	if (mf == NULL)
+		goto out;
 
 	if (opt_timeout) {
 		struct sigaction act;
@@ -1610,30 +1652,32 @@ nfslock_coherence(int argc, char **argv)
 		 *    - make next slot the current one
 		 */
 
-		if (mmap2_lock_record(&mf, index) < 0)
+		if (mmap2_lock_record(mf, index) < 0)
 			goto out;
 		while (opt_iterations--) {
 			struct mmap2_record *current;
 
-			if (!(current = mf.read(&mf, index)))
+			if (!(current = mf->read(mf, index)))
 				goto out;
+
+			/* fprintf(stderr, "[%u]", index); fflush(stderr); */
 
 			/* Update the response */
 			current->response = current->challenge;
-			if (mf.write(&mf, index, current) < 0)
+			if (mf->write(mf, index, current) < 0)
 				goto out;
 			write(2, "o", 1);
 
-			next = (index + 1) % mf.nslots;
-			if (mmap2_lock_record(&mf, next) < 0)
+			next = (index + 1) % mf->nslots;
+			if (mmap2_lock_record(mf, next) < 0)
 				goto out;
 
 			/* Unlocking should flush out all changes */
-			mmap2_unlock_record(&mf, index);
+			mmap2_unlock_record(mf, index);
 			index = next;
 		}
 
-		mmap2_unlock_record(&mf, index);
+		mmap2_unlock_record(mf, index);
 	} else {
 		unsigned int index = 1, prev = 0, next;
 
@@ -1648,12 +1692,12 @@ nfslock_coherence(int argc, char **argv)
 		 *    - unlock current slot
 		 *    - make slot N + 1 the current one
 		 */
-		if (mmap2_lock_record(&mf, index) < 0)
+		if (mmap2_lock_record(mf, index) < 0)
 			goto out;
 		while (opt_iterations--) {
 			struct mmap2_record *current;
 
-			if (!(current = mf.read(&mf, index)))
+			if (!(current = mf->read(mf, index)))
 				goto out;
 
 			if (current->response != current->challenge) {
@@ -1664,13 +1708,13 @@ nfslock_coherence(int argc, char **argv)
 
 			current->challenge++;
 
-			if (mf.write(&mf, index, current) < 0)
+			if (mf->write(mf, index, current) < 0)
 				goto out;
 			write(2, "+", 1);
 
 			/* Wait for the responder to lock the previous record,
 			 * then proceed. */
-			while (!mmap2_is_record_locked(&mf, prev)) {
+			while (!mmap2_is_record_locked(mf, prev)) {
 				write(2, ".", 1);
 				if (usleep(opt_wait_ms * 1000) < 0) {
 					if (mmap2_timeout)
@@ -1688,11 +1732,11 @@ nfslock_coherence(int argc, char **argv)
 			 *     responder should be woken up and be given a chance
 			 *     to claim the lock
 			 */
-			next = (index + 1) % mf.nslots;
-			if (mmap2_lock_record(&mf, next) < 0)
+			next = (index + 1) % mf->nslots;
+			if (mmap2_lock_record(mf, next) < 0)
 				goto out;
 
-			mmap2_unlock_record(&mf, index);
+			mmap2_unlock_record(mf, index);
 
 			prev = index;
 			index = next;
@@ -1722,7 +1766,7 @@ out:
 		}
 	}
 
-	mmap2_close(&mf);
+	mmap2_close(mf);
 	return res;
 }
 
