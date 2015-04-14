@@ -103,6 +103,9 @@ def nfs_server_wait_grace(node, grace_period = 90):
 	if not node.lastNFSRestart:
 		return
 
+	# Top up the grace period - there seems to be some jitter sometimes
+	grace_period = grace_period + 10
+
 	elapsed = time.time() - node.lastNFSRestart;
 	if elapsed < grace_period:
 		nsleep = grace_period - elapsed
