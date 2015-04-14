@@ -1345,7 +1345,7 @@ static int
 mmap2_write_mapped(struct mmap2_file *mf, unsigned int slot, struct mmap2_record *record)
 {
 	/* mmap case is easy */
-	if (mf->sync && msync(record, mmap2_record_size, MS_SYNC) < 0) {
+	if (mf->sync && msync(record, mmap2_record_size, MS_SYNC | MS_INVALIDATE) < 0) {
 		fprintf(stderr, "synching record failed (addr=%p): %m\n", record);
 		return -1;
 	}
@@ -1504,7 +1504,9 @@ __mmap2_open(struct mmap2_file *mf, const char *mode, const char *name, unsigned
 		return mmap2_open_stdio(mf, name, 0, 1, nslots);
 	if (!strcmp(mode, "stdio-direct"))
 		return mmap2_open_stdio(mf, name, O_DIRECT, 0, nslots);
-	if (!strcmp(mode, "mapped"))
+	if (!strcmp(mode, "mmap"))
+		return mmap2_open_mapped(mf, name, 0, nslots);
+	if (!strcmp(mode, "mmap-sync"))
 		return mmap2_open_mapped(mf, name, 1, nslots);
 
 	fprintf(stderr, "Unknown file access mode \"%s\"\n", mode);
