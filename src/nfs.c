@@ -1238,6 +1238,8 @@ out:	if (res)
  * This needs more work, especially for the multi-client scenario where we wish to
  * verify data consistency.
  */
+#define MMAP2_LOCK_DELAY_MAX	100
+
 struct mmap2_file {
 	int			fd;
 	unsigned int		size;
@@ -1245,6 +1247,9 @@ struct mmap2_file {
 
 	char *			mapped;
 	int			sync;
+
+	unsigned int		num_locks_acquired;
+	unsigned int		lock_delays[MMAP2_LOCK_DELAY_MAX+1];
 
 	struct mmap2_record *	(*read)(struct mmap2_file *, unsigned int slot);
 	int			(*write)(struct mmap2_file *, unsigned int slot, struct mmap2_record *);
@@ -1257,11 +1262,16 @@ struct mmap2_record {
 
 static int			mmap2_timeout = 0;
 static unsigned int		mmap2_record_size;
-static unsigned int		mmap2_locks_acquired = 0;
-static unsigned int		mmap2_lock_delays[61];
+static const double		mmap2_time_granularity = 0.1;
+
+static inline unsigned int
+mmap2_lock_delay_ms(unsigned int index)
+{
+	return 1000 * index * mmap2_time_granularity;
+}
 
 static int
-__mmap2_lock_record(int fd, unsigned int slot, int type)
+__mmap2_lock_record(struct mmap2_file *mf, unsigned int slot, int type)
 {
 	struct timeval t0, t1, delta;
 	unsigned int elapsed;
@@ -1274,23 +1284,24 @@ __mmap2_lock_record(int fd, unsigned int slot, int type)
 	fl.l_len = mmap2_record_size;
 
 	gettimeofday(&t0, NULL);
-	if (fcntl(fd, F_SETLKW, &fl) < 0) {
+	if (fcntl(mf->fd, F_SETLKW, &fl) < 0) {
 		fprintf(stderr, "fcntl(F_SETLKW, %u): %m\n", type);
 		return -1;
 	}
 	gettimeofday(&t1, NULL);
 	timersub(&t1, &t0, &delta);
+	elapsed = (delta.tv_sec + delta.tv_usec * 1e-6) / mmap2_time_granularity;
 
-	if ((elapsed = delta.tv_sec) > 5)
-		fprintf(stderr, "\nWarning: long delay in %s the lock (%u seconds)\n",
+	if (elapsed > 5 / mmap2_time_granularity)
+		fprintf(stderr, "\nWarning: long delay in %s the lock (%f seconds)\n",
 				(type == F_UNLCK)? "releasing" : "acquiring",
-				elapsed);
+				elapsed / mmap2_time_granularity);
 
 	if (type != F_UNLCK) {
-		if (elapsed >= 60)
-			elapsed = 60;
-		mmap2_lock_delays[elapsed]++;
-		mmap2_locks_acquired++;
+		if (elapsed >= MMAP2_LOCK_DELAY_MAX)
+			elapsed = MMAP2_LOCK_DELAY_MAX;
+		mf->lock_delays[elapsed]++;
+		mf->num_locks_acquired++;
 	}
 
 	return 0;
@@ -1299,7 +1310,7 @@ __mmap2_lock_record(int fd, unsigned int slot, int type)
 static int
 mmap2_lock_record(struct mmap2_file *mf, unsigned int slot)
 {
-	return __mmap2_lock_record(mf->fd, slot, F_WRLCK);
+	return __mmap2_lock_record(mf, slot, F_WRLCK);
 }
 
 static int
@@ -1322,7 +1333,7 @@ mmap2_is_record_locked(struct mmap2_file *mf, unsigned int slot)
 static int
 mmap2_unlock_record(struct mmap2_file *mf, unsigned int slot)
 {
-	return __mmap2_lock_record(mf->fd, slot, F_UNLCK);
+	return __mmap2_lock_record(mf, slot, F_UNLCK);
 }
 
 /*
@@ -1786,21 +1797,31 @@ nfslock_coherence(int argc, char **argv)
 
 out:	
 	write(2, "\n", 1);
-	if (opt_delay_report && mmap2_locks_acquired) {
-		printf("%u locks acquired.\n", mmap2_locks_acquired);
-		if (mmap2_lock_delays[0] == mmap2_locks_acquired) {
-			printf("All locks took less than 1 second to acquire\n");
+	if (opt_delay_report && mf->num_locks_acquired) {
+		printf("%u locks acquired.\n", mf->num_locks_acquired);
+		if (mf->lock_delays[0] == mf->num_locks_acquired) {
+			printf("All locks took less than %ums second to acquire\n", mmap2_lock_delay_ms(1));
 		} else {
 			unsigned int i, count;
 
 			printf("Distribution of lock delays:\n");
-			for (i = 0; i < 60; ++i) {
-				count = mmap2_lock_delays[i];
+			for (i = 0; i < MMAP2_LOCK_DELAY_MAX; ++i) {
+				count = mf->lock_delays[i];
 				if (count != 0) {
-					printf("  %2us .. %2us: %4u (%2u%%)\n",
-							i, i + 1, count,
-							100 * count / mmap2_locks_acquired);
+					printf("  %4u .. %4ums: %4u (%2u%%)\n",
+							mmap2_lock_delay_ms(i),
+							mmap2_lock_delay_ms(i + 1),
+							count,
+							100 * count / mf->num_locks_acquired);
 				}
+			}
+
+			count = mf->lock_delays[MMAP2_LOCK_DELAY_MAX];
+			if (count) {
+				printf("  greater %4ums: %4u (%2u%%)\n",
+						mmap2_lock_delay_ms(MMAP2_LOCK_DELAY_MAX),
+						count,
+						100 * count / mf->num_locks_acquired);
 			}
 		}
 	}
