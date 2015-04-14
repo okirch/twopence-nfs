@@ -769,10 +769,10 @@ def nfs_test_exports():
 		# Build the NFS mount options.
 		# Always include intr so we're able to kill stuck processes
 		options = "vers=%u" % version
-		options = nfs_join_mount_options(options, "intr");
+		options = nfs_join_mount_options(options, "soft,intr");
 
 		journal.beginTest(None, "verify that dir1 is exported read-only (mounted with options %s)" % options)
-		nfs_verify_readonly_slow("dir1", options);
+		nfs_verify_readonly("dir1", options);
 
 		journal.beginTest(None, "verify that dir2 is exported read-write (mounted with options %s)" % options)
 		nfs_verify_readwrite("dir2", options, 0, 0);
