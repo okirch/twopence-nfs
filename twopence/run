@@ -62,12 +62,10 @@ def init_server(node):
 
 	if node.run("test -x /usr/bin/systemctl"):
 		use_systemd = True
-		node.runOrFail("/etc/init.d/nfsserver start")
 		node.runOrFail("/usr/bin/systemctl enable nfsserver");
 	else:
 		node.runOrFail("insserv -d nfsserver");
-		node.runOrFail("/etc/init.d/nfsserver start")
-
+	nfs_server_control(node, "start")
 
 	# Help: add the two clients to the server's hosts file
 	node.addHostEntry(client1.ipaddr, "client1.testing.opensuse.org")
@@ -92,11 +90,12 @@ def init_server(node):
 # This records the time of the restart, so that we know how
 # long to wait until NFSv4 grace period expires
 ##################################################################
-def nfs_server_restart(node):
+def nfs_server_control(node, action):
 	import time
 
-	node.lastNFSRestart = time.time();
-	node.run("rcnfsserver restart")
+	if action == "start" or action == "restart":
+		node.lastNFSRestart = time.time();
+	node.run("rcnfsserver " + action)
 
 def nfs_server_wait_grace(node, grace_period = 90):
 	import time
@@ -109,6 +108,8 @@ def nfs_server_wait_grace(node, grace_period = 90):
 		nsleep = grace_period - elapsed
 		journal.info("Wait for NFSv4 grace period to elapse - sleeping for %u seconds" % nsleep)
 		time.sleep(nsleep)
+	else:
+		journal.info("NFS server restarted %u seconds ago - NFSv4 grace period should be over" % elapsed)
 
 ##################################################################
 # Initialize an NFS client node
@@ -854,7 +855,7 @@ def nfs_test_nfsv4_grace(grace_period = 90):
 	journal.beginGroup("nfsv4-grace")
 
 	journal.beginTest(None, "restarting NFS daemon")
-	nfs_server_restart(server)
+	nfs_server_control(server, "restart")
 
 	end_of_grace_period = server.lastNFSRestart + grace_period
 
