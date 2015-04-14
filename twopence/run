@@ -1071,16 +1071,26 @@ def __nfs_test_lock_coherence(tf, mode):
 
 	global client1, client2
 
-	# Run mmap2 with
-	#  16 slots (one slot is page sized)
+	# Run "nfs coherence" with
+	#   8 slots (one slot is page sized)
 	#  32 iterations
 	#  2min timeout
-	# Mode is a combination of -m and -s:
-	#  -m	If given, mmap the file into memory.
-	#	If not given, use read/write
-	#  -s	If given, use fsync/msync to flush modifications to server before unlock
-	#	If not given, expect the kernel to do that as part of the unlock
-	command = "/usr/bin/nfs mmap2 -c 16 -i 32 -t 120 %s " % mode
+	# Mode is one of
+	#  stdio:	use read/write and rely on implicit
+	#		data synching by the unlock operation
+	#  stdio-sync:	use read/write and explicitly call
+	#		fdatasync prior to unlocking a record
+	#  stdio-osync:like stdio, but open the file with O_SYNC
+	#  stdio-odirect:
+	#		like stdio, but open the file with O_DIRECT
+	#  mmap:	use mmap to map the file into memory, then
+	#		use regular memory access.
+	#		Rely on implicit data synching by the unlock
+	#		operation. (This doesn't seem to be supported
+	#		by the Linux kernel at the moment)
+	#  mmap-sync	use mmap, and explicitly call msync() prior
+	#		to unlocking a record.
+	command = "/usr/bin/nfs coherence -c 8 -i 32 -t 120 -M %s " % mode
 
 	# Clean up from previous runs
 	if not client1.runOrFail("rm -f " + tf):
@@ -1089,7 +1099,9 @@ def __nfs_test_lock_coherence(tf, mode):
 
 	# On client1, start the mmap challenger
 	# The -w option instructs the challenger to sleep for 500ms
-	# while waiting for the responder to catch up
+	# on average while holding the lock. Long intervals make this
+	# test take forever, while shorter intervals decrease the
+	# likelihood of lock requests actually blocking.
 	journal.info("Starting the challenger on client1")
 	if not client1.runBackground(command + "-w 500 " + tf):
 		return False
@@ -1137,7 +1149,7 @@ def nfs_locktest_cleanup(tf):
 
 	client1.run("rm -f " + tf)
 
-def nfs_test_lock_coherence(tf):
+def nfs_test_lock_coherence(tf, options):
 
 	# Only run these tests if we're using a twopence version that supports
 	# backgrounded commands.
@@ -1149,25 +1161,34 @@ def nfs_test_lock_coherence(tf):
 	journal.info('''
 This set of tests validates the data coherence of NFS.
 
-A file of 16 page-sized slots is accessed simultaneously by a challenger 
+A file of 8 page-sized slots is accessed simultaneously by a challenger 
 and a responder process. The challenger process writes a "challenge" word
 to each slot, and expects the responder to echo this back. Both processes
 use POSIX locks to prevent concurrent access during the read/write operations.
 
 The file will be accessed either using regular read/write system calls,
 or by mapping it into memory using mmap. Additional synchronization can
-be provided by using fsync/msync.
+be provided by using fsync/msync/directio.
 ''')
 
 	# Turn on lockd debugging
 	# client2.run("/usr/sbin/rpcdebug -m nlm all")
 
-	journal.beginTest(None, "locked read/write coherence")
-	if not __nfs_test_lock_coherence(tf, ""):
+	if options:
+		extramsg = " (with mount options %s)" % options
+	else:
+		extramsg = " (with default mount options)"
+
+	journal.beginTest(None, "locked read/write with implicit flush/revalidate" + extramsg)
+	if not __nfs_test_lock_coherence(tf, "stdio"):
 		nfs_locktest_cleanup(tf)
 
-	journal.beginTest(None, "locked read/write/fsync coherence")
-	if not __nfs_test_lock_coherence(tf, "-s"):
+	journal.beginTest(None, "locked read/write/fsync coherence" + extramsg)
+	if not __nfs_test_lock_coherence(tf, "stdio-sync"):
+		nfs_locktest_cleanup(tf)
+
+	journal.beginTest(None, "locked read/write/directio coherence" + extramsg)
+	if not __nfs_test_lock_coherence(tf, "stdio-odirect"):
 		nfs_locktest_cleanup(tf)
 
 	# At one point, a POSIX unlock would imply a flush of any
@@ -1176,12 +1197,12 @@ be provided by using fsync/msync.
 	# And it makes sense to not try to support this feature,
 	# because it only really works if locks are page aligned.
 	if False:
-		journal.beginTest(None, "locked mmap coherence")
-		if not __nfs_test_lock_coherence(tf, "-m"):
+		journal.beginTest(None, "locked mmap with implicit flush/revalidate" + extramsg)
+		if not __nfs_test_lock_coherence(tf, "mmap"):
 			nfs_locktest_cleanup(tf)
 
-	journal.beginTest(None, "locked mmap/msync coherence")
-	if not __nfs_test_lock_coherence(tf, "-m -s"):
+	journal.beginTest(None, "locked mmap/msync coherence" + extramsg)
+	if not __nfs_test_lock_coherence(tf, "mmap-sync"):
 		nfs_locktest_cleanup(tf)
 
 	# client2.run("/usr/sbin/rpcdebug -m nlm -c all")
@@ -1216,7 +1237,7 @@ def nfs_test_coherence():
 		testfile = __nfs_client_file("dir1") + "/testfile"
 		if nfs_test_wait_grace(client1, testfile):
 			nfs_test_cto(testfile)
-			nfs_test_lock_coherence(testfile)
+			nfs_test_lock_coherence(testfile, options)
 		else:
 			journal.warning("Skipping all coherence tests")
 
