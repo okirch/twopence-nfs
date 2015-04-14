@@ -1502,7 +1502,9 @@ __mmap2_open(struct mmap2_file *mf, const char *mode, const char *name, unsigned
 		return mmap2_open_stdio(mf, name, 0, 0, nslots);
 	if (!strcmp(mode, "stdio-sync"))
 		return mmap2_open_stdio(mf, name, 0, 1, nslots);
-	if (!strcmp(mode, "stdio-direct"))
+	if (!strcmp(mode, "stdio-osync"))
+		return mmap2_open_stdio(mf, name, O_SYNC, 0, nslots);
+	if (!strcmp(mode, "stdio-odirect"))
 		return mmap2_open_stdio(mf, name, O_DIRECT, 0, nslots);
 	if (!strcmp(mode, "mmap"))
 		return mmap2_open_mapped(mf, name, 0, nslots);
@@ -1559,6 +1561,41 @@ __mmap2_timeout_handler(int sig)
  *  - mmap consistency
  *  - coherence when using posix locks
  *  - lock block/grant behavior
+ *
+ * The way this test works is this:
+ *  -	The challenger process is started first. It creates
+ *	a file with the requested number of slots; each slot
+ *	is page aligned.
+ *
+ *  -	Each record contains two words, a challenge and a
+ *	response.
+ *
+ *  -	The challenger process loops the over all records,
+ *	locks each one in turn, verifies that the response
+ *	is equal to the challenge, then increments the challenge
+ *	word.
+ *	It then locks the next record, and unlocks the current
+ *	record.
+ *
+ *  -	The responder process loops over all records,
+ *	locking each one in turn, and does nothing but copy
+ *	the challenge to the response word.
+ * 
+ * This test supports several modes of file I/O:
+ *  stdio:	use read/write and rely on implicit
+ *		data synching by the unlock operation
+ *  stdio-sync:	use read/write and explicitly call
+ *		fdatasync prior to unlocking a record
+ *  stdio-osync:like stdio, but open the file with O_SYNC
+ *  stdio-odirect:
+ *		like stdio, but open the file with O_DIRECT
+ *  mmap:	use mmap to map the file into memory, then
+ *		use regular memory access.
+ *		Rely on implicit data synching by the unlock
+ *		operation. (This doesn't seem to be supported
+ *		by the Linux kernel at the moment)
+ *  mmap-sync	use mmap, and explicitly call msync() prior
+ *		to unlocking a record.
  */
 int
 nfslock_coherence(int argc, char **argv)
