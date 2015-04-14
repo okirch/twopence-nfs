@@ -759,7 +759,6 @@ def nfs_test_exports():
 '''
 
 	nfs_write_verify_exports(server, exports_data)
-	nfs_verify_readonly_slow("dir1")
 
 	# We run the NFSV4 tests last - hopefully we will be past the grace period then.
 	# If not, we're prepared to wait for the remainder of the grace period to expire
@@ -773,7 +772,7 @@ def nfs_test_exports():
 		options = nfs_join_mount_options(options, "intr");
 
 		journal.beginTest(None, "verify that dir1 is exported read-only (mounted with options %s)" % options)
-		nfs_verify_readonly("dir1", options);
+		nfs_verify_readonly_slow("dir1", options);
 
 		journal.beginTest(None, "verify that dir2 is exported read-write (mounted with options %s)" % options)
 		nfs_verify_readwrite("dir2", options, 0, 0);
