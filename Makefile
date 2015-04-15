@@ -20,3 +20,4 @@ obj/%.o: src/%.c
 
 clean:
 	rm -rf obj $(APPS)
+	rm -f core
