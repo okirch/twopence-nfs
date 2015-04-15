@@ -1,0 +1,11 @@
+node    client1
+repo    http://download.suse.de/ibs/Devel:/SLEnkins/${SYSTEM_CLIENT1}/Devel:SLEnkins.repo
+install %{name}-client
+
+node    client2
+repo    http://download.suse.de/ibs/Devel:/SLEnkins/${SYSTEM_CLIENT2}/Devel:SLEnkins.repo
+install %{name}-client
+
+node    server
+repo    http://download.suse.de/ibs/Devel:/SLEnkins/${SYSTEM_SERVER}/Devel:SLEnkins.repo
+install nfs-kernel-server
