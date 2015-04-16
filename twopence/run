@@ -1066,9 +1066,16 @@ def nfs_test_flock3(tf):
 
 def nfs_test_locking():
 
-	global client1, client2, server
+	global journal, client1, client2, server
 
 	journal.beginGroup("locking-init")
+
+	if not client1.run("test -x /usr/bin/nfs"):
+		journal.error("/usr/bin/nfs missing on client1")
+		return False
+	if not client2.run("test -x /usr/bin/nfs"):
+		journal.error("/usr/bin/nfs missing on client2")
+		return False
 
 	exports_data = '''
 /srv/nfs/dir1	*(rw,no_root_squash,subtree_check)
@@ -1289,9 +1296,15 @@ be provided by using fsync/msync/directio.
 
 def nfs_test_coherence():
 
-	global client1, client2, server
+	global journal, client1, client2, server
 
 	journal.beginGroup("coherence-init")
+
+	if not client1.run("test -x /usr/bin/nfs"):
+		journal.error("/usr/bin/nfs missing on client1")
+		return False
+	if not client2.run("test -x /usr/bin/nfs"):
+		journal.error("/usr/bin/nfs missing on client2")
 
 	exports_data = '''
 /srv/nfs/dir1	*(rw,no_root_squash,subtree_check)
