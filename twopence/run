@@ -54,7 +54,7 @@ def init_server(node):
 
 	nfs_init_common(node)
 
-	journal.beginTest(None, "enable nfsd and rpcbind on server")
+	journal.beginTest("enable nfsd and rpcbind on server")
 	node.runOrFail("/bin/rm -rf /srv/nfs/dir{1,2,3,4}")
 	node.runOrFail("/bin/mkdir -p -m 777 /srv/nfs/dir{1,2,3,4}")
 
@@ -73,12 +73,12 @@ def init_server(node):
 	if client2:
 		node.addHostEntry(client2.ipaddr, "client2.testing.opensuse.org")
 
-	journal.beginTest(None, "Check whether NFSv2 is enabled by default")
+	journal.beginTest("Check whether NFSv2 is enabled by default")
 	status = node.runOrFail("cat /proc/fs/nfsd/versions")
 	if status and status.stdout.find("-2") >= 0:
 		journal.info("NFSv2 disabled on server by default");
 
-		journal.beginTest(None, "Enabling NFSv2 on server")
+		journal.beginTest("Enabling NFSv2 on server")
 		node.changeSysconfigVar("nfs", "MOUNTD_OPTIONS", "-V2")
 		node.changeSysconfigVar("nfs", "NFSD_OPTIONS", "-V2")
 		node.runOrFail("rcnfsserver restart")
@@ -120,7 +120,7 @@ def nfs_server_wait_grace(node, grace_period = 90):
 def init_client(node):
 	global server;
 
-	journal.beginTest(None, "initialize client %s" % node.name)
+	journal.beginTest("initialize client %s" % node.name)
 
 	nfs_init_common(node)
 
@@ -215,7 +215,7 @@ def nfs_write_exports(server, exports):
 def nfs_write_verify_exports(server, exports):
 	global client1
 
-	journal.beginTest(None, "updating exports file on %s" % server.name)
+	journal.beginTest("updating exports file on %s" % server.name)
 	if nfs_write_exports(server, exports):
 		journal.info("verifying visibility on the client side")
 		client1.runOrFail("/usr/sbin/showmount -e %s" % server.ipaddr)
@@ -336,9 +336,9 @@ def __nfs_verify_mount(client, servername, dir):
 
 def __nfs_mount_should_succeed(client, servername, dir, options = None):
 	if options:
-		journal.beginTest(None, "mount with options %s" % options)
+		journal.beginTest("mount with options %s" % options)
 	else:
-		journal.beginTest(None, "mount without options")
+		journal.beginTest("mount without options")
 
 	clientdir = __nfs_client_file(dir)
 	serverdir = __nfs_server_file(dir)
@@ -360,9 +360,9 @@ def nfs_mount_should_succeed(client, servername, dir, options = None):
 
 def __nfs_mount_should_fail(client, servername, dir, options = None):
 	if options:
-		journal.beginTest(None, "mount with options %s" % options)
+		journal.beginTest("mount with options %s" % options)
 	else:
-		journal.beginTest(None, "mount without options")
+		journal.beginTest("mount without options")
 
 	clientdir = __nfs_client_file(dir)
 	serverdir = __nfs_server_file(dir)
@@ -556,13 +556,13 @@ def nfs_test_createfile(client, dir):
 	tf = dir + "/testfile";
 
 	# Open a file with O_CREAT.
-	journal.beginTest(None, "create file");
+	journal.beginTest("create file");
 	if nfstool_run(client1, "create-file " + tf):
 		client1.run("/bin/rm -f " + tf)
 		journal.success()
 
 	# Open a file with O_CREAT|O_EXCL, twice.
-	journal.beginTest(None, "Create file with O_EXCL, twice");
+	journal.beginTest("Create file with O_EXCL, twice");
 	journal.info("the first call should succeed, the second one should fail")
 	if not __nfstool_run(client1, "create-file -x " + tf):
 		journal.failure("First file open with O_EXCL failed (should have succeeded)")
@@ -575,7 +575,7 @@ def nfs_test_writefile(client, dir):
 
 	tf = dir + "/testfile";
 
-	journal.beginTest(None, "write to file")
+	journal.beginTest("write to file")
 	if not client.run("/bin/dd if=/dev/zero of=%s bs=1k count=4k" % tf):
 		journal.failure("Failed to write to file")
 
@@ -585,7 +585,7 @@ def nfs_test_chown(client, dir):
 
 	tf = dir + "/testfile"
 
-	journal.beginTest(None, "change file's ownership")
+	journal.beginTest("change file's ownership")
 	if client.runOrFail("touch " + tf):
 		client.runOrFail("/bin/chown --changes nobody " + tf)
 
@@ -595,7 +595,7 @@ def nfs_test_chmod(client, dir):
 
 	tf = dir + "/testfile"
 
-	journal.beginTest(None, "change file's permissions")
+	journal.beginTest("change file's permissions")
 	if client.runOrFail("touch " + tf):
 		client.runOrFail("/bin/chmod --changes 0600 " + tf)
 
@@ -606,13 +606,13 @@ def nfs_test_silly_rename(client, dir):
 	src = dir + "/testfile1"
 	dst = dir + "/testfile2"
 
-	journal.beginTest(None, "Verify silly-rename semantics")
+	journal.beginTest("Verify silly-rename semantics")
 	journal.info("Open dst, rename src to dst, verify both files")
 	nfstool_run(client, "silly-rename %s %s" % (src, dst))
 	client1.runOrFail("/bin/rm -f " + src)
 	client1.runOrFail("/bin/rm -f " + dst)
 
-	journal.beginTest(None, "Verify silly-rename semantics #2")
+	journal.beginTest("Verify silly-rename semantics #2")
 	journal.info("Open dst, rename src to dst, verify both files. Leave src open the whole time")
 	nfstool_run(client, "silly-rename -x %s %s" % (src, dst))
 	client1.runOrFail("/bin/rm -f " + src)
@@ -622,7 +622,7 @@ def nfs_test_silly_unlink(client, dir):
 
 	tf = dir + "/testfile"
 
-	journal.beginTest(None, "Verify silly-unlink semantics")
+	journal.beginTest("Verify silly-unlink semantics")
 	journal.info("Open testfile, unlink it, verify content")
 	nfstool_run(client, "silly-unlink " + tf)
 	client1.runOrFail("/bin/rm -f " + tf)
@@ -631,7 +631,7 @@ def nfs_test_socket(client, dir):
 
 	tf = dir + "/mysock"
 
-	journal.beginTest(None, "Verify socket creation")
+	journal.beginTest("Verify socket creation")
 	nfstool_run(client, "create-special -t socket -m 0644 " + tf)
 	client1.runOrFail("/bin/rm -f " + tf)
 
@@ -639,7 +639,7 @@ def nfs_test_fifo(client, dir):
 
 	tf = dir + "/myfifo"
 
-	journal.beginTest(None, "Verify FIFO creation")
+	journal.beginTest("Verify FIFO creation")
 	nfstool_run(client, "create-special -t fifo -m 0644 " + tf)
 	client1.runOrFail("/bin/rm -f " + tf)
 
@@ -647,7 +647,7 @@ def nfs_test_chrdev(client, dir):
 
 	tf = dir + "/devnull"
 
-	journal.beginTest(None, "Verify chardev creation")
+	journal.beginTest("Verify chardev creation")
 	nfstool_run(client, "create-special -t chrdev -m 0644 -d 1:3 " + tf)
 	client1.runOrFail("/bin/rm -f " + tf)
 
@@ -655,7 +655,7 @@ def nfs_test_blkdev(client, dir):
 
 	tf = dir + "/devloop"
 
-	journal.beginTest(None, "Verify blockdev creation")
+	journal.beginTest("Verify blockdev creation")
 	nfstool_run(client, "create-special -t blkdev -m 0600 -d 7:0 " + tf)
 	client1.runOrFail("/bin/rm -f " + tf)
 
@@ -665,7 +665,7 @@ def nfs_test_symlink(client, dir):
 	target = dir + "/testfile"
 	basename = "testfile"
 
-	journal.beginTest(None, "Verify symlink operation")
+	journal.beginTest("Verify symlink operation")
 	if not client.sendfile(target, data = bytearray("imadoofus")):
 		journal.failure("unable to write target file")
 		return False
@@ -675,7 +675,7 @@ def nfs_test_symlink(client, dir):
 		if not st or str(st.buffer) != "imadoofus":
 			journal.failure("problem verifying file content through symlink")
 
-	journal.beginTest(None, "Verify symlink operation #2")
+	journal.beginTest("Verify symlink operation #2")
 	if client.run("/bin/ln -s randomlink %s" % link):
 		journal.failure("/bin/ln -s on an existing symlink did not fail")
 
@@ -690,7 +690,7 @@ def nfs_test_hardlink(client, dir):
 	target = dir + "/testfile"
 	basename = "testfile"
 
-	journal.beginTest(None, "Verify hardlink operation")
+	journal.beginTest("Verify hardlink operation")
 	if not client.sendfile(target, data = bytearray("imadoofus")):
 		journal.failure("unable to write target file")
 		return False
@@ -700,7 +700,7 @@ def nfs_test_hardlink(client, dir):
 		if not st or str(st.buffer) != "imadoofus":
 			journal.failure("problem verifying file content through hardlink")
 
-	journal.beginTest(None, "Verify hardlink operation #2")
+	journal.beginTest("Verify hardlink operation #2")
 	if client.run("/bin/ln %s %s" % (target, link)):
 		journal.failure("/bin/ln on an existing hardlink did not fail")
 
@@ -724,7 +724,7 @@ def nfs_test_mount():
 
 	nfs_write_verify_exports(server, exports_data)
 
-	journal.beginTest(None, "verify that we can mount from server by name")
+	journal.beginTest("verify that we can mount from server by name")
 	__nfs_verify_mount(client1, "nfs-server", "dir1");
 
 	nfs_mount_should_succeed(client1, server.ipaddr, "dir1")
@@ -775,16 +775,16 @@ def nfs_test_exports():
 		options = "vers=%u" % version
 		options = nfs_join_mount_options(options, "soft,intr");
 
-		journal.beginTest(None, "verify that dir1 is exported read-only (mounted with options %s)" % options)
+		journal.beginTest("verify that dir1 is exported read-only (mounted with options %s)" % options)
 		nfs_verify_readonly("dir1", options);
 
-		journal.beginTest(None, "verify that dir2 is exported read-write (mounted with options %s)" % options)
+		journal.beginTest("verify that dir2 is exported read-write (mounted with options %s)" % options)
 		nfs_verify_readwrite("dir2", options, 0, 0);
 
-		journal.beginTest(None, "verify that dir3 is exported read-write with root squash (mounted with options %s)" % options)
+		journal.beginTest("verify that dir3 is exported read-write with root squash (mounted with options %s)" % options)
 		nfs_verify_readwrite("dir3", options, 65534, 65534);
 
-		journal.beginTest(None, "verify that dir4 is exported read-write with anonuid=60000 (mounted with options %s)" % options)
+		journal.beginTest("verify that dir4 is exported read-write with anonuid=60000 (mounted with options %s)" % options)
 		nfs_verify_readwrite("dir4", options, 60000, 65534);
 
 	journal.beginGroup("export-matching")
@@ -826,7 +826,7 @@ def nfs_test_fileops():
 
 		journal.beginGroup("fileops-%s" % options)
 
-		journal.beginTest(None, "Mounting dir with options %s" % options)
+		journal.beginTest("Mounting dir with options %s" % options)
 		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
 			journal.info("Skipping fileops tests for these options - cannot mount directory");
 			continue;
@@ -857,7 +857,7 @@ def nfs_test_nfsv4_grace(grace_period = 90):
 
 	journal.beginGroup("nfsv4-grace")
 
-	journal.beginTest(None, "restarting NFS daemon")
+	journal.beginTest("restarting NFS daemon")
 	nfs_server_control(server, "restart")
 
 	end_of_grace_period = server.lastNFSRestart + grace_period
@@ -871,7 +871,7 @@ def nfs_test_nfsv4_grace(grace_period = 90):
 	server_file = __nfs_server_file("dir1", "testfile")
 	client_file = __nfs_client_file("dir1", "testfile")
 
-	journal.beginTest(None, "Checking for NFSv4 grace period")
+	journal.beginTest("Checking for NFSv4 grace period")
 	server.run("/bin/rm -f " + server_file)
 	if not nfs_do_mount(client1, server.ipaddr, "dir1", "vers=4"):
 		return False
@@ -916,28 +916,28 @@ def nfs_test_posix_lock1(tf):
 
 	global client1
 
-	journal.beginTest(None, "Grab a shared POSIX lock")
+	journal.beginTest("Grab a shared POSIX lock")
 	client1.runOrFail("/usr/bin/nfs lock -t 1 " + tf)
 
 def nfs_test_posix_lock2(tf):
 
 	global client1
 
-	journal.beginTest(None, "Grab an exclusive POSIX lock")
+	journal.beginTest("Grab an exclusive POSIX lock")
 	client1.runOrFail("/usr/bin/nfs lock -t 1 -x " + tf)
 
 def nfs_test_posix_lock3(tf):
 
 	global client1
 
-	journal.beginTest(None, "Lock and unlock, then make sure GETLK reports no more locks")
+	journal.beginTest("Lock and unlock, then make sure GETLK reports no more locks")
 	client1.runOrFail("/usr/bin/nfs lock -t 1 -u " + tf)
 
 def nfs_test_posix_lock4(tf):
 
 	global client1
 
-	journal.beginTest(None, "Grab a sequence of adjacent locks, unlock whole range, and make all locks are gone")
+	journal.beginTest("Grab a sequence of adjacent locks, unlock whole range, and make all locks are gone")
 	client1.runOrFail("/usr/bin/nfs lock -t 1 -s -u " + tf)
 
 def nfs_test_posix_lock5(tf):
@@ -951,7 +951,7 @@ def nfs_test_posix_lock5(tf):
 	except:
 		return
 
-	journal.beginTest(None, "Grab shared POSIX locks on two clients")
+	journal.beginTest("Grab shared POSIX locks on two clients")
 
 	# Grab one lock on client1, holding that for 5 seconds
 	if not client1.runBackground("/usr/bin/nfs lock -t 5 " + tf):
@@ -985,7 +985,7 @@ def nfs_test_posix_lock6(tf):
 	except:
 		return
 
-	journal.beginTest(None, "Grab exclusive POSIX locks on two clients")
+	journal.beginTest("Grab exclusive POSIX locks on two clients")
 
 	# Grab one lock on client1, holding that for 10 seconds
 	if not client1.runBackground("/usr/bin/nfs lock -t 10 -x " + tf):
@@ -1020,14 +1020,14 @@ def nfs_test_flock1(tf):
 
 	global client1
 
-	journal.beginTest(None, "Grab a shared FLOCK lock")
+	journal.beginTest("Grab a shared FLOCK lock")
 	client1.runOrFail("/usr/bin/nfs lock -t 1 -b " + tf)
 
 def nfs_test_flock2(tf):
 
 	global client1
 
-	journal.beginTest(None, "Grab a exclusive FLOCK lock")
+	journal.beginTest("Grab a exclusive FLOCK lock")
 	client1.runOrFail("/usr/bin/nfs lock -t 1 -x -b " + tf)
 
 def nfs_test_flock3(tf):
@@ -1041,7 +1041,7 @@ def nfs_test_flock3(tf):
 	except:
 		return
 
-	journal.beginTest(None, "Grab shared FLOCK locks on two clients")
+	journal.beginTest("Grab shared FLOCK locks on two clients")
 
 	# Grab one lock on client1, holding that for 5 seconds
 	if not client1.runBackground("/usr/bin/nfs lock -t 5 -b " + tf):
@@ -1088,7 +1088,7 @@ def nfs_test_locking():
 
 		journal.beginGroup("locking-%s" % options)
 
-		journal.beginTest(None, "Mounting dir with options " + options)
+		journal.beginTest("Mounting dir with options " + options)
 		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
 			journal.info("Skipping locking tests for these options - cannot mount directory");
 			continue;
@@ -1266,15 +1266,15 @@ be provided by using fsync/msync/directio.
 	else:
 		extramsg = " (with default mount options)"
 
-	journal.beginTest(None, "locked read/write with implicit flush/revalidate" + extramsg)
+	journal.beginTest("locked read/write with implicit flush/revalidate" + extramsg)
 	if not __nfs_test_lock_coherence(tf, "stdio"):
 		nfs_locktest_cleanup(tf)
 
-	journal.beginTest(None, "locked read/write/fsync coherence" + extramsg)
+	journal.beginTest("locked read/write/fsync coherence" + extramsg)
 	if not __nfs_test_lock_coherence(tf, "stdio-sync"):
 		nfs_locktest_cleanup(tf)
 
-	journal.beginTest(None, "locked read/write/directio coherence" + extramsg)
+	journal.beginTest("locked read/write/directio coherence" + extramsg)
 	if not __nfs_test_lock_coherence(tf, "stdio-odirect"):
 		nfs_locktest_cleanup(tf)
 
@@ -1284,11 +1284,11 @@ be provided by using fsync/msync/directio.
 	# And it makes sense to not try to support this feature,
 	# because it only really works if locks are page aligned.
 	if False:
-		journal.beginTest(None, "locked mmap with implicit flush/revalidate" + extramsg)
+		journal.beginTest("locked mmap with implicit flush/revalidate" + extramsg)
 		if not __nfs_test_lock_coherence(tf, "mmap"):
 			nfs_locktest_cleanup(tf)
 
-	journal.beginTest(None, "locked mmap/msync coherence" + extramsg)
+	journal.beginTest("locked mmap/msync coherence" + extramsg)
 	if not __nfs_test_lock_coherence(tf, "mmap-sync"):
 		nfs_locktest_cleanup(tf)
 
@@ -1317,7 +1317,7 @@ def nfs_test_coherence():
 
 		journal.beginGroup("coherence-%s" % options)
 
-		journal.beginTest(None, "Mounting dir with options " + options)
+		journal.beginTest("Mounting dir with options " + options)
 		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
 			journal.info("Skipping locking tests for these options - cannot mount directory");
 			continue;
