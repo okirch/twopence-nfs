@@ -1348,6 +1348,13 @@ def main():
 	nfs_test_locking()
 	nfs_test_coherence()
 
-	journal.writeReport()
 
-main()
+try:
+	main()
+except:
+	import traceback
+
+	journal.error("Oops, caught unexpected exception")
+	journal.info(traceback.format_exc(None))
+
+journal.writeReport()
