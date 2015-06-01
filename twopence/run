@@ -26,11 +26,11 @@ def setup():
 	journal = config.journal
 	journal.beginGroup("setup")
 
-	server = susetest.Target(config.node("server"))
-	client1 = susetest.Target(config.node("client1"))
+	server = config.target("server")
+	client1 = config.target("client1")
 
 	try:
-		client2 = susetest.Target(config.node("client2"))
+		client2 = config.target("client2")
 	except:
 		journal.info("No second client defined, skipping all two-client test cases")
 
