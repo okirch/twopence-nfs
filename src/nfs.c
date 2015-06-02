@@ -1343,8 +1343,15 @@ mmap2_unlock_record(struct mmap2_file *mf, unsigned int slot)
 static struct mmap2_record *
 mmap2_read_mapped(struct mmap2_file *mf, unsigned int slot)
 {
-	/* Just return the address of the mapped record */
-	return (struct mmap2_record *) (mf->mapped + slot * mf->record_size);
+	struct mmap2_record *record = (struct mmap2_record *) (mf->mapped + slot * mf->record_size);
+
+	/* Not sure if this helps - but without any help from the application, the
+	 * kernel doesn't revalidate pages after obtaining the lock */
+	if (mf->sync && msync(record, mf->record_size, MS_SYNC | MS_INVALIDATE) < 0) {
+		fprintf(stderr, "failed to invalidate record (addr=%p): %m\n", record);
+		return NULL;
+	}
+	return record;
 }
 
 static int
