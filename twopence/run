@@ -399,7 +399,7 @@ def __nfs_verify_readonly(client, filename, timeout = 0):
 
 	# We check how long this took, because a misconfigured/broken NFSv4 idmapping
 	# may cause significant delays on the first access.
-	if delay > 5:
+	if delay > 10:
 		journal.failure("Creating the file took too long (%u seconds)" % delay)
 		return False
 	
@@ -411,9 +411,11 @@ def nfs_verify_readonly(dir, options):
 	server.runOrFail("/bin/rm -f " + __nfs_server_file(dir, "readonly-test"))
 
 	if not nfs_do_mount(client1, server.ipaddr, dir, options):
-		return False
+		journal.error("unable to mount file system")
+		rv = False
+	else:
+		rv = __nfs_verify_readonly(client1, __nfs_client_file(dir, "readonly-test"))
 
-	rv = __nfs_verify_readonly(client1, __nfs_client_file(dir, "readonly-test"))
 	nfs_do_umount(client1, dir)
 	return rv
 
@@ -431,9 +433,10 @@ def nfs_verify_readonly_slow(dir):
 	# TCP mount, retry operation after 20 seconds, retry twice.
 	# This operation should time out after less than 60 seconds overall
 	if not nfs_do_mount(client1, server.ipaddr, dir, "tcp,soft,intr,timeo=200,retrans=2"):
-		return False
+		rv = False
+	else:
+		rv = __nfs_verify_readonly(client1, __nfs_client_file(dir, "readonly-test"), 4 * 60)
 
-	rv = __nfs_verify_readonly(client1, __nfs_client_file(dir, "readonly-test"), 4 * 60)
 	nfs_do_umount(client1, dir)
 	return rv
 
@@ -471,7 +474,7 @@ def __nfs_verify_readwrite(client, filename, verifyuid, verifygid):
 
 	# We check how long this took, because a misconfigured/broken NFSv4 idmapping
 	# may cause significant delays on the first access.
-	if delay > 5:
+	if delay > 10:
 		journal.failure("Creating the file took too long (%u seconds)" % delay)
 		return False
 
@@ -481,10 +484,19 @@ def nfs_verify_readwrite(dir, options, verifyuid = -1, verifygid = -1):
 
 	server.runOrFail("/bin/rm -f " + __nfs_server_file(dir, "readwrite-test"))
 
-	if not nfs_do_mount(client1, server.ipaddr, dir, options):
-		return False
+	server.syslogCapture()
+	client1.syslogCapture()
 
-	rv = __nfs_verify_readwrite(client1, __nfs_client_file(dir, "readwrite-test"), verifyuid, verifygid)
+	if not nfs_do_mount(client1, server.ipaddr, dir, options):
+		journal.error("unable to mount file system")
+		rv = False
+	else:
+		rv = __nfs_verify_readwrite(client1, __nfs_client_file(dir, "readwrite-test"), verifyuid, verifygid)
+
+	if not rv:
+		server.syslogDisplay()
+		client1.syslogDisplay()
+
 	nfs_do_umount(client1, dir)
 	return rv
 
