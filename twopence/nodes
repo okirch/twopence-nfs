@@ -1,8 +1,10 @@
-node    client1
-install twopence-nfs-client
+node    	client1
+repository	${CHANNEL_SLENKINS_CLIENT1}
+install 	twopence-nfs-client
 
-node    client2
-install twopence-nfs-client
+node    	client2
+repository	${CHANNEL_SLENKINS_CLIENT2}
+install 	twopence-nfs-client
 
-node    server
-install nfs-kernel-server
+node    	server
+install 	nfs-kernel-server
