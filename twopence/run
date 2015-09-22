@@ -211,7 +211,6 @@ def nfs_write_exports(server, exports):
 		journal.failure("unable to upload exports file")
 		return False
 
-	if server.run("test -x /usr/bin/systemctl"):
 	if nfs_server_control(server, "reload"):
 		return False
 
