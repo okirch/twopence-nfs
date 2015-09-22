@@ -43,6 +43,12 @@ def setup():
 
 	# FIXME: we should also verify the host names of these nodes
 
+def has_systemd(node):
+	if not hasattr(node, "__has_systemd"):
+		node.__has_systemd = False
+		if node.run("test -x /usr/bin/systemctl"):
+			node.__has_systemd = True
+	return node.__has_systemd
 
 ##################################################################
 # Initialize RPC tests and run some initial sanity checks
@@ -60,8 +66,7 @@ def init_server(node):
 
 	node.lastNFSRestart = 0
 
-	if node.run("test -x /usr/bin/systemctl"):
-		use_systemd = True
+	if has_systemd(node):
 		node.runOrFail("/usr/bin/systemctl enable nfsserver");
 	else:
 		node.runOrFail("insserv -d nfsserver");
@@ -143,7 +148,7 @@ def init_client(node):
 	# nfs_write_idmap_conf(node)
 
 	# A simple start is not enough to make it start all helper services
-	if node.run("test -x /usr/bin/systemctl"):
+	if has_systemd(node):
 		if not node.run("systemctl start nfs.service"):
 			journal.fatal("Failed to start NFS client services")
 			return False;
@@ -206,7 +211,8 @@ def nfs_write_exports(server, exports):
 		journal.failure("unable to upload exports file")
 		return False
 
-	if not server.runOrFail("/etc/init.d/nfsserver reload"):
+	if server.run("test -x /usr/bin/systemctl"):
+	if nfs_server_control(server, "reload"):
 		return False
 
 	journal.info("downloading exports file for comparison")
