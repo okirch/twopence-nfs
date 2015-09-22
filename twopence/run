@@ -143,9 +143,17 @@ def init_client(node):
 	# nfs_write_idmap_conf(node)
 
 	# A simple start is not enough to make it start all helper services
-	if not node.run("/etc/init.d/nfs force-start"):
-		journal.fatal("NFS start script exited with error")
-		return False;
+	if node.run("test -x /usr/bin/systemctl"):
+		if not node.run("systemctl start nfs.service"):
+			journal.fatal("Failed to start NFS client services")
+			return False;
+	else:
+		# SLE11 needs a special force-start target, otherwise
+		# it will not start the NFS client services unless there's
+		# an nfs mount point in /etc/fstab
+		if not node.run("/etc/init.d/nfs force-start"):
+			journal.fatal("Failed to start NFS client services")
+			return False;
 
 	# In current kernels, the default is to not perform ID mapping
 	# in NFSv4 unless auth flavors other than AUTH_SYS are used.
