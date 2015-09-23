@@ -246,6 +246,7 @@ def nfs_check_exportfs(server, expected):
 
 	exp = expected.splitlines()
 	want_dirs = []
+	want_targets = []
 	for l in exp:
 		[dir, target] = l.split()
 		want_dirs.append(dir)
