@@ -238,6 +238,8 @@ def nfs_write_verify_exports(server, exports):
 		client1.runOrFail("/usr/sbin/showmount -e %s" % server.ipaddr)
 
 def nfs_check_exportfs(server, expected):
+	import re
+
 	journal.info("Retrieve list of exported file systems using exportfs")
 	st = server.run("exportfs")
 	if not st:
@@ -249,6 +251,11 @@ def nfs_check_exportfs(server, expected):
 	want_targets = []
 	for l in exp:
 		[dir, target] = l.split()
+
+		# For now, we ignore all options present in the target part
+		# i.e. "*(ro)" is translated to "*"
+		target = re.sub("\([^)]*\)", "", target)
+
 		want_dirs.append(dir)
 		want_targets.append(target)
 
