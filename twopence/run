@@ -215,6 +215,10 @@ Nobody-Group = nobody
 # Update the exports file on the given node
 ##################################################################
 def nfs_write_exports(server, exports):
+	journal.info("%s: updating exports file:" % server.name)
+	for l in exports.splitlines():
+		journal.info("   " + l)
+	journal.info("---end of exports file---")
 
 	if not server.sendfile(remotefile = "/etc/exports", data = bytearray(exports)):
 		journal.failure("unable to upload exports file")
@@ -232,7 +236,6 @@ def nfs_write_exports(server, exports):
 	journal.info("Content of exports file")
 	journal.recordBuffer(status.buffer)
 	return True
-
 
 def nfs_write_verify_exports(server, exports):
 	global client1
