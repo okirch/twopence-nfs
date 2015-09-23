@@ -237,6 +237,48 @@ def nfs_write_verify_exports(server, exports):
 		journal.info("verifying visibility on the client side")
 		client1.runOrFail("/usr/sbin/showmount -e %s" % server.ipaddr)
 
+def nfs_check_exportfs(server, expected):
+	journal.info("Retrieve list of exported file systems using exportfs")
+	st = server.run("exportfs")
+	if not st:
+		journal.failure("unable to run exportfs")
+		return False
+
+	exp = expected.splitlines()
+	want_dirs = []
+	for l in exp:
+		[dir, target] = l.split()
+		want_dirs.append(dir)
+		want_targets.append(target)
+
+	got = str(st.stdout).splitlines()
+	for l in got:
+		[dir, target] = l.split()
+		i = want_dirs.index(dir)
+		if i < 0:
+			journal.failure("Unexpected directory \"%s\" in exportfs output" % dir)
+			return False
+
+		if target == "<world>":
+			target = "*";
+
+		if want_targets[i] != target:
+			journal.failure("Directory exported to \"%s\" but should be exported to \"%s\"" % (target, want_targets[i]))
+			return False
+
+		del want_dirs[i]
+		del want_targets[i]
+
+	if want_dirs:
+		journal.failure("Directory \"%s\" not found in exportfs output" % want_dirs[0])
+		if len(want_dirs) > 1:
+			journal.info("%u directories missing in total" % len(want_dirs))
+		return False
+
+	journal.info("Good, server side exports match what we expect")
+	return True
+
+
 ##################################################################
 # Initialize server and clients
 ##################################################################
@@ -838,6 +880,77 @@ def nfs_test_exports():
 	nfs_verify_exports_matching("match-domain", client1, "*.testing.opensuse.org")
 
 
+##################################################################
+# If we're running in a systemd environment, ensure that
+# the rcnfsserver init script continues to work as expected
+##################################################################
+def nfs_test_sysvinit():
+
+	global client1, client2, server
+
+	journal.beginGroup("sysvinit")
+
+	my_exports = "/srv/nfs/dir1 *(rw)"
+	running = True
+
+	journal.beginTest("setup: stopping nfs server")
+	nfs_server_control(server, "stop")
+	running = False
+
+	journal.beginTest("setup: write simple exports file to server")
+	if not nfs_write_exports(server, my_exports):
+		journal.failure("Unable to initialize sysvinit tests")
+		return False
+
+	journal.beginTest("Check status of stopped NFS server")
+	st = server.run("rcnfsserver status")
+	if st.code != 3:
+		journal.info("rcnfsserver status returned exit code %d" % st.code)
+		journal.failure("rcnfsserver should have returned 3 [unused]")
+
+	journal.beginTest("Try to start NFS server using rcnfsserver")
+	if not server.run("rcnfsserver start"):
+		journal.failure("that didn't work, it seems")
+	else:
+		running = True
+
+	journal.beginTest("Check status of running NFS server")
+	st = server.run("rcnfsserver status")
+	if st.code != 0:
+		journal.info("rcnfsserver status returned exit code %d" % st.code)
+		journal.failure("rcnfsserver should have returned 0 [running]")
+
+	if running:
+		journal.beginTest("Verify list of exported file systems")
+		nfs_check_exportfs(server, my_exports)
+
+	journal.beginTest("Try to restart NFS server using rcnfsserver")
+	if not server.run("rcnfsserver restart"):
+		journal.failure("that didn't work, it seems")
+	else:
+		running = True
+
+	if not running:
+		# Try to recover enough so that we can run the subsequent test cases
+		journal.beginTest("recovery: get nfs server back running")
+		nfs_server_control(server, "stop")
+		if not nfs_server_control(server, "start"):
+			journal.fatal("unable to bring nfs server back to life")
+
+	# change /etc/exports, run rcnfsservr reload and verify that
+	# reload actually updated the list of exported file systems
+	journal.beginTest("Try to reload exported file systems using rcnfsserver reload")
+	my_exports = "/srv/nfs/dir2 *(ro)"
+
+	journal.info("setup: write different exports file to server")
+	if not nfs_write_exports(server, my_exports):
+		journal.failure("Unable to update exports file")
+	elif not server.run("rcnfsserver reload"):
+		journal.failure("that didn't work, it seems")
+
+	journal.beginTest("Verify list of exported file systems has been updated by reload")
+	nfs_check_exportfs(server, my_exports)
+
 def nfs_test_fileops():
 
 	global client1, client2, server
@@ -1372,6 +1485,7 @@ def main():
 	nfs_init_all()
 	nfs_test_mount()
 	nfs_test_exports()
+	nfs_test_sysvinit()
 	nfs_test_fileops()
 	nfs_test_nfsv4_grace()
 	nfs_test_locking()
