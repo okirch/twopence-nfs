@@ -88,6 +88,11 @@ def init_server(node):
 		node.changeSysconfigVar("nfs", "NFSD_OPTIONS", "-V2")
 		node.runOrFail("rcnfsserver restart")
 
+		journal.beginTest("Ensure that NFSv2 is enabled now")
+		status = node.runOrFail("cat /proc/fs/nfsd/versions")
+		if status and status.stdout.find("-2") >= 0:
+			journal.failure("Oops, NFSv2 still disabled - expect quite a few failures")
+
 	journal.finishGroup()
 
 ##################################################################
@@ -314,7 +319,7 @@ def nfs_join_mount_options(left, right):
 	return right
 
 def __nfs_do_mount(client, servername, clientdir, serverdir, options = None):
-	journal.info("mounting %s from %s (options %s)" % (serverdir, servername, options))
+	journal.info("%s: mounting %s from %s (options %s)" % (client.name, serverdir, servername, options))
 	if options:
 		cmdline = "/bin/mount %s:%s %s -o %s" % (servername, serverdir, clientdir, options)
 	else:
