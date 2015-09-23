@@ -844,8 +844,6 @@ def nfs_test_exports():
 
 	global client1, client2, server
 
-	journal.beginGroup("export-flags")
-
 	exports_data = '''
 /srv/nfs/dir1	*(ro,subtree_check)
 /srv/nfs/dir2	*(rw,no_root_squash,subtree_check)
@@ -853,11 +851,13 @@ def nfs_test_exports():
 /srv/nfs/dir4	*(rw,root_squash,anonuid=60000,subtree_check)
 '''
 
-	nfs_write_verify_exports(server, exports_data)
-
 	# We run the NFSV4 tests last - hopefully we will be past the grace period then.
 	# If not, we're prepared to wait for the remainder of the grace period to expire
 	for version in [2, 3, 4]:
+		journal.beginGroup("export-nfsv%d" % version)
+
+		nfs_write_verify_exports(server, exports_data)
+
 		if version == 4:
 			nfs_server_wait_grace(server)
 
