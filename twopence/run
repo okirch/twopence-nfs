@@ -212,12 +212,15 @@ Nobody-Group = nobody
 	node.sendfile(remotefile = "/etc/idmapd.conf", data = idmapd_conf)
 
 ##################################################################
-# Update the exports file on the given node
+# Update the exports file on the given node, make nfsd reload
+# the exports file, and use exportfs to provide the reader with
+# hints of what acutally *did* get exported.
 ##################################################################
 def nfs_write_exports(server, exports):
 	journal.info("%s: updating exports file:" % server.name)
 	for l in exports.splitlines():
-		journal.info("   " + l)
+		if l:
+			journal.info(l)
 	journal.info("---end of exports file---")
 
 	if not server.sendfile(remotefile = "/etc/exports", data = bytearray(exports)):
@@ -227,14 +230,15 @@ def nfs_write_exports(server, exports):
 	if nfs_server_control(server, "reload"):
 		return False
 
-	journal.info("downloading exports file for comparison")
-	status = server.recvfile("/etc/exports")
+	status = server.run("exportfs -v")
 	if not status:
 		journal.failure("unable to download exports file");
-		return False
+	else:
+		journal.info("exported file systems:")
+		for l in str(status.stdout).splitlines():
+			journal.info(l)
+		journal.info("---end of exportfs output---")
 
-	journal.info("Content of exports file")
-	journal.recordBuffer(status.buffer)
 	return True
 
 def nfs_write_verify_exports(server, exports):
