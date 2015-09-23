@@ -100,7 +100,11 @@ def nfs_server_control(node, action):
 
 	if action == "start" or action == "restart":
 		node.lastNFSRestart = time.time();
-	node.run("rcnfsserver " + action)
+
+	if has_systemd(node):
+		node.run("systemctl %s nfs-server.service" % action)
+	else:
+		node.run("rcnfsserver " + action)
 
 def nfs_server_wait_grace(node, grace_period = 90):
 	import time
