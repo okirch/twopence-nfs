@@ -212,6 +212,36 @@ Nobody-Group = nobody
 	node.sendfile(remotefile = "/etc/idmapd.conf", data = idmapd_conf)
 
 ##################################################################
+# Two functions to display the server's idea of what is currently
+# exported.
+##################################################################
+def nfs_show_userland_exports():
+	global server
+
+	journal.info("Trying to get list of exported file systems via exportfs")
+	status = server.run("exportfs -v", quiet = True)
+	if not status:
+		journal.warning("unable to retrieve list of exported file systems");
+	else:
+		journal.info("Exported file systems (as seen by mountd):")
+		for l in str(status.stdout).splitlines():
+			journal.info(l)
+		journal.info("---end of exportfs output---")
+
+def nfs_show_kernel_exports():
+	global server
+
+	journal.info("Trying to retrieve kernel export table")
+	st = server.run("cat /proc/fs/nfsd/exports", quiet = True)
+	if not st:
+		journal.warning("unable to retrieve list of exported file systems");
+	else:
+		journal.info("Content of kernel export table:")
+		for l in str(st.stdout).splitlines():
+			journal.info(l)
+		journal.info("---end of kernel exports data---")
+
+##################################################################
 # Update the exports file on the given node, make nfsd reload
 # the exports file, and use exportfs to provide the reader with
 # hints of what acutally *did* get exported.
@@ -230,15 +260,8 @@ def nfs_write_exports(server, exports):
 	if nfs_server_control(server, "reload"):
 		return False
 
-	status = server.run("exportfs -v", quiet = 1)
-	if not status:
-		journal.failure("unable to download exports file");
-	else:
-		journal.info("exported file systems:")
-		for l in str(status.stdout).splitlines():
-			journal.info(l)
-		journal.info("---end of exportfs output---")
-
+	nfs_show_userland_exports()
+	nfs_show_kernel_exports()
 	return True
 
 def nfs_write_verify_exports(server, exports):
@@ -488,6 +511,7 @@ def __nfs_verify_readonly(client, filename, timeout = 0):
 
 	if client.run("/bin/touch " + filename, timeout = timeout):
 		journal.failure("file system should be read-only, but succeeded in creating file")
+		nfs_show_kernel_exports()
 		return False
 
 	delay = time.time() - t0
@@ -550,6 +574,7 @@ def __nfs_verify_readwrite(client, filename, verifyuid, verifygid):
 
 	if not client.run("/bin/touch " + filename):
 		journal.failure("file system should be read-write, but failed in creating file")
+		nfs_show_kernel_exports()
 		return False
 
 	delay = time.time() - t0
@@ -592,6 +617,9 @@ def nfs_verify_readwrite(dir, options, verifyuid = -1, verifygid = -1):
 		journal.error("unable to mount file system")
 		rv = False
 	else:
+		# For the time being, always display kernel exports table
+		nfs_show_kernel_exports()
+
 		rv = __nfs_verify_readwrite(client1, __nfs_client_file(dir, "readwrite-test"), verifyuid, verifygid)
 
 	if not rv:
