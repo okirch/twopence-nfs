@@ -230,7 +230,7 @@ def nfs_write_exports(server, exports):
 	if nfs_server_control(server, "reload"):
 		return False
 
-	status = server.run("exportfs -v")
+	status = server.run("exportfs -v", quiet = 1)
 	if not status:
 		journal.failure("unable to download exports file");
 	else:
