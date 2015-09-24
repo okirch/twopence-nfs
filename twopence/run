@@ -462,6 +462,22 @@ def nfs_mount_should_fail(client, servername, dir, options = None):
 	return rv
 
 ##################################################################
+# Print an information message on how we're verifying readwrite/readonly
+##################################################################
+def nfs_verify_log_info(dirname, how, options, verifyUid = -1, verifyGid = -1):
+	infomsg = "verify that %s is exported how (" % (dirname, how)
+	if options:
+		infomsg += "mounted with options %s" % options
+	else:
+		infomsg += "mounted with default options"
+	if verifyUid >= 0:
+		infomsg += ", verify uid=%u" % verifyUid
+	if verifyGid >= 0:
+		infomsg += ", verify gid=%u" % verifyGid
+	infomsg += ")"
+	journal.info(infomsg)
+
+##################################################################
 # Create a file on a read-only volume
 ##################################################################
 def __nfs_verify_readonly(client, filename, timeout = 0):
@@ -486,6 +502,9 @@ def __nfs_verify_readonly(client, filename, timeout = 0):
 
 def nfs_verify_readonly(dir, options):
 	global client1, server
+
+	# Log informational message
+	nfs_verify_log_info(dir, "read-only", options)
 
 	server.runOrFail("/bin/rm -f " + __nfs_server_file(dir, "readonly-test"))
 
@@ -560,6 +579,9 @@ def __nfs_verify_readwrite(client, filename, verifyuid, verifygid):
 
 def nfs_verify_readwrite(dir, options, verifyuid = -1, verifygid = -1):
 	global client1, server
+
+	# Log informational message
+	nfs_verify_log_info(dir, "read-write", options, verifyuid, verifygid)
 
 	server.runOrFail("/bin/rm -f " + __nfs_server_file(dir, "readwrite-test"))
 
@@ -866,16 +888,16 @@ def nfs_test_exports():
 		options = "vers=%u" % version
 		options = nfs_join_mount_options(options, "soft,intr");
 
-		journal.beginTest("verify that dir1 is exported read-only (mounted with options %s)" % options)
+		journal.beginTest("test read-only exports")
 		nfs_verify_readonly("dir1", options);
 
-		journal.beginTest("verify that dir2 is exported read-write (mounted with options %s)" % options)
+		journal.beginTest("test read-write exports without root squashing")
 		nfs_verify_readwrite("dir2", options, 0, 0);
 
-		journal.beginTest("verify that dir3 is exported read-write with root squash (mounted with options %s)" % options)
+		journal.beginTest("test read-write exports with root squashing")
 		nfs_verify_readwrite("dir3", options, 65534, 65534);
 
-		journal.beginTest("verify that dir4 is exported read-write with anonuid=60000 (mounted with options %s)" % options)
+		journal.beginTest("test read-write exports with root squashing and uid override")
 		nfs_verify_readwrite("dir4", options, 60000, 65534);
 
 	journal.beginGroup("export-matching")
