@@ -488,7 +488,7 @@ def nfs_mount_should_fail(client, servername, dir, options = None):
 # Print an information message on how we're verifying readwrite/readonly
 ##################################################################
 def nfs_verify_log_info(dirname, how, options, verifyUid = -1, verifyGid = -1):
-	infomsg = "verify that %s is exported how (" % (dirname, how)
+	infomsg = "verify that %s is exported %s (" % (dirname, how)
 	if options:
 		infomsg += "mounted with options %s" % options
 	else:
