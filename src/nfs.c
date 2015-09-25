@@ -1,7 +1,7 @@
 /*
  * Various nfs test things
  *
- * Copyright (C) 2004-2014 Olaf Kirch <okir@suse.de>
+ * Copyright (C) 2004-2015 Olaf Kirch <okir@suse.de>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -47,6 +47,7 @@
 struct file_data {
 	char *		name;
 	size_t		size;
+	off64_t		offset;
 	dev_t		dev;
 	ino_t		ino;
 };
@@ -69,7 +70,7 @@ static int	parse_size(const char *, size_t *);
 static int	parse_device(const char *, dev_t *);
 
 static void	change_user(const char *username, const char *groupname);
-static int	create_file(struct file_data *data, const char *name, int flags, size_t filesize);
+static int	create_file(struct file_data *data, const char *name, int flags, off64_t offset, size_t filesize);
 static int	open_existing_file(struct file_data *data, const char *name, int flags);
 static int	generate_file(struct file_data *data, const char *name, size_t filesize);
 static int	__generate_file(struct file_data *data, int fd, int use_mmap);
@@ -268,14 +269,16 @@ int
 nfscreate(int argc, char **argv)
 {
 	int	opt_flags = O_CREAT | O_WRONLY;
-	size_t	opt_filesize = 4096;
+	size_t	opt_filesize = 0;
+	size_t	opt_count = 4096;
+	size_t	opt_offset = 0;
 	int	opt_mmap = 0;
 	int	c, fd;
 
-	while ((c = getopt(argc, argv, "c:mn:x")) != -1) {
+	while ((c = getopt(argc, argv, "c:mn:o:x")) != -1) {
 		switch (c) {
 		case 'c':
-			if (!parse_size(optarg, &opt_filesize))
+			if (!parse_size(optarg, &opt_count))
 				return 1;
 			break;
 		case 'm':
@@ -284,6 +287,10 @@ nfscreate(int argc, char **argv)
 			break;
 		case 'n':
 			opt_flags |= O_NONBLOCK;
+			break;
+		case 'o':
+			if (!parse_size(optarg, &opt_offset))
+				return 1;
 			break;
 		case 'x':
 			opt_flags |= O_EXCL;
@@ -299,6 +306,14 @@ nfscreate(int argc, char **argv)
 		return 1;
 	}
 
+	opt_filesize = opt_offset + opt_count;
+	if (opt_filesize < opt_offset || opt_filesize < opt_count) {
+		fprintf(stderr, "Overflow in file size (offset %Ld + count %Ld)\n",
+				(long long) opt_offset,
+				(long long) opt_count);
+		return 1;
+	}
+
 	if (!(opt_flags & O_EXCL))
 		opt_flags |= O_TRUNC;
 
@@ -307,13 +322,14 @@ nfscreate(int argc, char **argv)
 		struct file_data fdata;
 
 		printf("Creating file %s\n", filename);
-		fd = create_file(&fdata, filename, opt_flags, opt_filesize);
+		fd = create_file(&fdata, filename, opt_flags, opt_offset, opt_filesize);
 		if (fd < 0) {
 			printf("Unable to create file, exiting\n");
 			return 1;
 		}
 
-		printf("Writing pattern of %ld bytes to file %s\n", (long) opt_filesize, filename);
+		printf("Writing pattern of %ld bytes at offset %ld to file %s\n",
+				(long) opt_count, (long) opt_offset, filename);
 		if (__generate_file(&fdata, fd, opt_mmap) < 0) {
 			printf("Unable to write to file, exiting\n");
 			return 1;
@@ -329,11 +345,15 @@ nfscreate(int argc, char **argv)
 int
 nfsverify(int argc, char **argv)
 {
-	//int	opt_mmap = 0;
+	size_t	opt_offset = 0;
 	int	c, fd;
 
-	while ((c = getopt(argc, argv, "")) != -1) {
+	while ((c = getopt(argc, argv, "o:")) != -1) {
 		switch (c) {
+		case 'o':
+			if (!parse_size(optarg, &opt_offset))
+				return 1;
+			break;
 		default:
 			fprintf(stderr, "Invalid option\n");
 			return 1;
@@ -346,13 +366,15 @@ nfsverify(int argc, char **argv)
 	}
 
 	while (optind < argc) {
+		const char *filename = argv[optind++];
 		struct file_data fdata;
 
-		fd = open_existing_file(&fdata, argv[optind++], O_RDONLY);
+		fd = open_existing_file(&fdata, filename, O_RDONLY);
 		if (fd < 0)
 			return 1;
 
-		if (verify_file("file", fd, &fdata) < 0)
+		fdata.offset = opt_offset;
+		if (verify_file(filename, fd, &fdata) < 0)
 			return 1;
 		close(fd);
 	}
@@ -1965,15 +1987,16 @@ generate_buffer(const struct file_data *data, unsigned long offset, unsigned cha
 }
 
 static void
-init_file(struct file_data *data, const char *name, size_t filesize)
+init_file(struct file_data *data, const char *name, off64_t offset, size_t filesize)
 {
 	memset(data, 0, sizeof(*data));
 	data->name = strdup(name);
+	data->offset = offset;
 	data->size = filesize;
 }
 
 static int
-create_file(struct file_data *data, const char *name, int flags, size_t filesize)
+create_file(struct file_data *data, const char *name, int flags, off64_t offset, size_t filesize)
 {
 	int fd;
 
@@ -1982,7 +2005,7 @@ create_file(struct file_data *data, const char *name, int flags, size_t filesize
 		return -1;
 	}
 
-	init_file(data, name, filesize);
+	init_file(data, name, offset, filesize);
 	return fd;
 }
 
@@ -2022,8 +2045,10 @@ __generate_file(struct file_data *data, int fd, int use_mmap)
 	data->dev = stb.st_dev;
 	data->ino = stb.st_ino;
 
+#if 0
 	if (data->size > SILLY_MAX)
 		data->size = SILLY_MAX;
+#endif
 
 	if (use_mmap) {
 		ftruncate(fd, data->size);
@@ -2036,7 +2061,18 @@ __generate_file(struct file_data *data, int fd, int use_mmap)
 		memset(mapped, 0, data->size);
 	}
 
-	for (written = 0; written < data->size; ) {
+	if (data->offset > 0) {
+		off64_t offset;
+		
+		offset = lseek64(fd, data->offset, SEEK_SET);
+		if (offset < 0) {
+			fprintf(stderr, "Unable to seek to offset %lld: %m\n",
+					(long long) data->offset);
+			return -1;
+		}
+	}
+
+	for (written = data->offset; written < data->size; ) {
 		size_t chunk;
 		ssize_t n;
 
@@ -2072,7 +2108,7 @@ generate_file(struct file_data *data, const char *name, size_t filesize)
 {
 	int fd;
 
-	fd = create_file(data, name, O_RDWR|O_CREAT|O_TRUNC, filesize);
+	fd = create_file(data, name, O_RDWR|O_CREAT|O_TRUNC, 0, filesize);
 	if (fd < 0)
 		return -1;
 
@@ -2090,13 +2126,13 @@ verify_file(const char *ident, int fd, const struct file_data *data)
 	unsigned long long verified;
 
 	if (!opt_quiet) {
-		printf("Verifying %s contents: ", ident);
+		printf("Verifying contents of %s: ", ident);
 		fflush(stdout);
 	}
 
-	lseek(fd, 0, SEEK_SET);
+	lseek64(fd, data->offset, SEEK_SET);
 
-	for (verified = 0; verified < data->size; ) {
+	for (verified = data->offset; verified < data->size; ) {
 		unsigned char buffer[4096], pattern[4096];
 		unsigned int chunk;
 		int n;
