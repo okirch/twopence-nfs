@@ -715,6 +715,19 @@ def nfs_test_createfile(client, dir):
 
 	client1.runOrFail("/bin/rm -f " + tf)
 
+def nfs_test_largefile(client, dir):
+
+	tf = dir + "/testfile";
+
+	# Open a file with O_CREAT.
+	journal.beginTest("large file");
+	journal.info("Create file and write 16K bytes at offset 4GB, then verify the data")
+	if nfstool_run(client1, "create-file -c 16K -o 4G" + tf) and \
+	   nfstool_run(client1, "verify-file -o 4G" + tf):
+		journal.success()
+
+	client1.runOrFail("/bin/rm -f " + tf)
+
 def nfs_test_writefile(client, dir):
 
 	tf = dir + "/testfile";
@@ -1035,11 +1048,12 @@ def nfs_test_fileops():
 '''
 	nfs_write_verify_exports(server, exports_data)
 
+	for version in [2, 3, 4]:
 	for options in ["vers=2", "vers=3", "vers=4"]:
 		# Better safe than sorry
-		options = nfs_join_mount_options(options, "intr");
+		options = nfs_join_mount_options("vers=%d" % version, "intr");
 
-		journal.beginGroup("fileops-%s" % options)
+		journal.beginGroup("fileops-nfs%d" % version)
 
 		journal.beginTest("Mounting dir with options %s" % options)
 		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
@@ -1059,6 +1073,9 @@ def nfs_test_fileops():
 		nfs_test_blkdev(client1, clientdir)
 		nfs_test_symlink(client1, clientdir)
 		nfs_test_hardlink(client1, clientdir)
+
+		if version >= 3:
+			nfs_test_largefile(client1, clientdir)
 
 		nfs_do_umount(client1, "dir1")
 
