@@ -303,14 +303,25 @@ nfscreate(int argc, char **argv)
 		opt_flags |= O_TRUNC;
 
 	while (optind < argc) {
+		const char *filename = argv[optind++];
 		struct file_data fdata;
 
-		fd = create_file(&fdata, argv[optind++], opt_flags, opt_filesize);
-		if (fd < 0)
+		printf("Creating file %s\n", filename);
+		fd = create_file(&fdata, filename, opt_flags, opt_filesize);
+		if (fd < 0) {
+			printf("Unable to create file, exiting\n");
 			return 1;
-		if (__generate_file(&fdata, fd, opt_mmap) < 0)
+		}
+
+		printf("Writing pattern of %ld bytes to file %s\n", (long) opt_filesize, filename);
+		if (__generate_file(&fdata, fd, opt_mmap) < 0) {
+			printf("Unable to write to file, exiting\n");
 			return 1;
+		}
+
+		printf("Closing file.\n");
 		close(fd);
+		printf("Done.\n");
 	}
 	return 0;
 }
