@@ -1049,7 +1049,6 @@ def nfs_test_fileops():
 	nfs_write_verify_exports(server, exports_data)
 
 	for version in [2, 3, 4]:
-	for options in ["vers=2", "vers=3", "vers=4"]:
 		# Better safe than sorry
 		options = nfs_join_mount_options("vers=%d" % version, "intr");
 
