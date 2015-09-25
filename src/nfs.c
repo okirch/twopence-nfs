@@ -1546,6 +1546,8 @@ __mmap2_close(struct mmap2_file *mf)
 void
 mmap2_close(struct mmap2_file *mf)
 {
+	if (mf == NULL)
+		return;
 	__mmap2_close(mf);
 	free(mf);
 }
@@ -1817,7 +1819,7 @@ out:
 	if (mmap2_timeout)
 		printf("Timed out\n");
 
-	if (opt_delay_report && mf->num_locks_acquired) {
+	if (opt_delay_report && mf && mf->num_locks_acquired) {
 		printf("%u locks acquired.\n", mf->num_locks_acquired);
 		if (mf->lock_delays[0] == mf->num_locks_acquired) {
 			printf("All locks took less than %ums second to acquire\n", mmap2_lock_delay_ms(1));
