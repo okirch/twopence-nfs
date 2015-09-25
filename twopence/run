@@ -699,8 +699,11 @@ def nfs_test_createfile(client, dir):
 	# Open a file with O_CREAT.
 	journal.beginTest("create file");
 	if nfstool_run(client1, "create-file " + tf):
-		client1.run("/bin/rm -f " + tf)
 		journal.success()
+
+	# Even if the above command returned error, the file may still
+	# have been created.
+	client1.run("/bin/rm -f " + tf)
 
 	# Open a file with O_CREAT|O_EXCL, twice.
 	journal.beginTest("Create file with O_EXCL, twice");
