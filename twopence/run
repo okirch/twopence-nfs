@@ -18,6 +18,16 @@ client2 = None
 
 nfstool	= "/usr/bin/nfs"
 
+# The default fstype we will test on.
+# "Extra" types will be tested as well for basic functionality
+fstype_default = "btrfs"
+fstype_extra = ['ext3', 'ext4', 'xfs']
+
+# This dict maps names 'dir1', 'dir2', etc to the type of the underlying
+# file system
+dir2fstype = dict()
+fstype2dir = dict()
+
 def setup():
 	global client1, client2, server, journal
 
@@ -62,6 +72,10 @@ def init_server(node):
 
 	for index in [1, 2, 3, 4]:
 		create_filesystem(node, index)
+	index = 5
+	for fstype in fstype_extra:
+		create_filesystem(node, index, fstype)
+		index += 1
 
 	journal.beginTest("enable nfsd and rpcbind on server")
 
@@ -96,9 +110,15 @@ def init_server(node):
 
 	journal.finishGroup()
 
-def create_filesystem(node, index, fstype = 'btrfs'):
+def create_filesystem(node, index, fstype = None):
+
+	global fstype_default
+
 	image_name = "/var/tmp/disk%u" % index
 	mount_point = "/srv/nfs/dir%u" % index
+
+	if not fstype:
+		fstype = fstype_default
 
 	journal.beginTest("Setting up file system %s" % mount_point)
 
@@ -136,9 +156,20 @@ def create_filesystem(node, index, fstype = 'btrfs'):
 	if not node.run("mount %s %s" % (loopdev, mount_point)):
 		journal.fatal("Unable to mount %s" % image_name)
 
-	node.run("chmod 777 %s" % mount_point)
+	if not node.run("chmod 777 %s" % mount_point):
+		journal.notice("Error changing directory permissions")
+		journal.notice("Assuming that file system type %s is supported read-only" % fstype)
+		journal.notice("Skipping all tests on this file system")
+		node.run("umount %s" % mount_point)
+		return False
+
+	short_mount_point = "dir%u" % index
+	if not fstype2dir.has_key(fstype):
+		fstype2dir[fstype] = short_mount_point
+	dir2fstype[short_mount_point] = fstype
 
 	journal.success("File system %s is ready for service" % mount_point)
+	return True
 
 def loopdev_for_image(node, image_name):
 
@@ -1027,6 +1058,10 @@ def nfs_test_exports():
 		journal.beginTest("test read-write exports with root squashing and uid override")
 		nfs_verify_readwrite("dir4", options, 60000, 65534);
 
+	# FIXME: we should do this export matching for both NFSv4 and NFSv3,
+	# because they use two very different code paths (one going through
+	# mountd, the other being authenticated by the kernel directly).
+
 	journal.beginGroup("export-matching")
 
 	##################################################################
@@ -1126,40 +1161,49 @@ def nfs_test_fileops():
 
 	journal.beginGroup("fileops-init")
 
-	exports_data = '''
-/srv/nfs/dir1	*(rw,no_root_squash,subtree_check)
-'''
+	# dir2fstype maps keys like "dir1" to the type of the
+	# exported file system
+	fstype_all = [fstype_default] + fstype_extra
+
+	exports_data = ''
+	for fstype in fstype_all:
+		server_path = __nfs_server_file(fstype2dir[fstype])
+		exports_data += "%s  *(rw,no_root_squash,subtree_check)\n" % server_path
+
 	nfs_write_verify_exports(server, exports_data)
 
 	for version in [2, 3, 4]:
 		# Better safe than sorry
 		options = nfs_join_mount_options("vers=%d" % version, "intr");
 
-		journal.beginGroup("fileops-nfs%d" % version)
+		for fstype in fstype_all:
+			short_dirname = fstype2dir[fstype]
 
-		journal.beginTest("Mounting dir with options %s" % options)
-		if not nfs_do_mount(client1, server.ipaddr, "dir1", options):
-			journal.info("Skipping fileops tests for these options - cannot mount directory");
-			continue;
+			journal.beginGroup("fileops-%s-nfs%d" % (fstype, version))
 
-		clientdir = __nfs_client_file("dir1")
-		nfs_test_createfile(client1, clientdir)
-		nfs_test_writefile(client1, clientdir)
-		nfs_test_chown(client1, clientdir)
-		nfs_test_chmod(client1, clientdir)
-		nfs_test_silly_rename(client1, clientdir)
-		nfs_test_silly_unlink(client1, clientdir)
-		nfs_test_socket(client1, clientdir)
-		nfs_test_fifo(client1, clientdir)
-		nfs_test_chrdev(client1, clientdir)
-		nfs_test_blkdev(client1, clientdir)
-		nfs_test_symlink(client1, clientdir)
-		nfs_test_hardlink(client1, clientdir)
+			journal.beginTest("Mounting %s file system via NFS with options %s" % (fstype, options))
+			if not nfs_do_mount(client1, server.ipaddr, short_dirname, options):
+				journal.info("Skipping fileops tests for these options - cannot mount directory");
+				continue;
 
-		if version >= 3:
-			nfs_test_largefile(client1, clientdir)
+			clientdir = __nfs_client_file(short_dirname)
+			nfs_test_createfile(client1, clientdir)
+			nfs_test_writefile(client1, clientdir)
+			nfs_test_chown(client1, clientdir)
+			nfs_test_chmod(client1, clientdir)
+			nfs_test_silly_rename(client1, clientdir)
+			nfs_test_silly_unlink(client1, clientdir)
+			nfs_test_socket(client1, clientdir)
+			nfs_test_fifo(client1, clientdir)
+			nfs_test_chrdev(client1, clientdir)
+			nfs_test_blkdev(client1, clientdir)
+			nfs_test_symlink(client1, clientdir)
+			nfs_test_hardlink(client1, clientdir)
 
-		nfs_do_umount(client1, "dir1")
+			if version >= 3:
+				nfs_test_largefile(client1, clientdir)
+
+			nfs_do_umount(client1, short_dirname)
 
 ##################################################################
 # First things first - check that the NFSv4 grace period of
