@@ -336,6 +336,11 @@ def nfs_write_exports(server, exports):
 	if nfs_server_control(server, "reload"):
 		return False
 
+	# We need to flush the kernel's export cache explicitly.
+	# The nfs init script will not do this for us automatically.
+	journal.info("Flush kernel export cache")
+	server.run("exportfs -f")
+
 	nfs_show_userland_exports()
 	nfs_show_kernel_exports()
 	return True
