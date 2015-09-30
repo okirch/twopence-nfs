@@ -1326,7 +1326,7 @@ def nfs_test_posix_lock4(tf):
 
 	global client1
 
-	journal.beginTest("Grab a sequence of adjacent locks, unlock whole range, and make all locks are gone")
+	journal.beginTest("Grab a sequence of adjacent locks, unlock whole range, and make sure all locks are gone")
 	client1.runOrFail("/usr/bin/nfs lock -t 1 -s -u " + tf)
 
 def nfs_test_posix_lock5(tf):
