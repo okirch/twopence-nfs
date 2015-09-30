@@ -1056,10 +1056,10 @@ def nfs_test_exports():
 	global client1, client2, server
 
 	exports_data = '''
-/srv/nfs/dir1	*(ro,subtree_check)
-/srv/nfs/dir2	*(rw,no_root_squash,subtree_check)
-/srv/nfs/dir3	*(rw,subtree_check)
-/srv/nfs/dir4	*(rw,root_squash,anonuid=60000,subtree_check)
+/srv/nfs/dir1	*(ro,no_subtree_check)
+/srv/nfs/dir2	*(rw,no_root_squash,no_subtree_check)
+/srv/nfs/dir3	*(rw,no_subtree_check)
+/srv/nfs/dir4	*(rw,root_squash,anonuid=60000,no_subtree_check)
 '''
 
 	# We run the NFSV4 tests last - hopefully we will be past the grace period then.
@@ -1199,7 +1199,7 @@ def nfs_test_fileops():
 	exports_data = ''
 	for fstype in fstype_all:
 		server_path = __nfs_server_file(fstype2dir[fstype])
-		exports_data += "%s  *(rw,no_root_squash,subtree_check)\n" % server_path
+		exports_data += "%s  *(rw,no_root_squash,no_subtree_check)\n" % server_path
 
 	nfs_write_verify_exports(server, exports_data)
 
@@ -1467,7 +1467,7 @@ def nfs_test_locking():
 		return False
 
 	exports_data = '''
-/srv/nfs/dir1	*(rw,no_root_squash,subtree_check)
+/srv/nfs/dir1	*(rw,no_root_squash,no_subtree_check)
 '''
 	nfs_write_verify_exports(server, exports_data)
 
@@ -1696,7 +1696,7 @@ def nfs_test_coherence():
 		journal.error("/usr/bin/nfs missing on client2")
 
 	exports_data = '''
-/srv/nfs/dir1	*(rw,no_root_squash,subtree_check)
+/srv/nfs/dir1	*(rw,no_root_squash,no_subtree_check)
 '''
 	nfs_write_verify_exports(server, exports_data)
 
