@@ -775,16 +775,18 @@ def nfs_verify_readwrite(dir, options, verifyuid = -1, verifygid = -1):
 ##################################################################
 # Verify that export matching works properly
 ##################################################################
-def nfs_verify_exports_matching(testName, client, clientName):
+def nfs_verify_exports_matching(testName, client, clientName, options = None):
 
 	exports_data = '''
 /srv/nfs/dir1   *(ro,no_subtree_check)
 /srv/nfs/dir1   %s(rw,no_root_squash,no_subtree_check)
 '''
 
+	options = nfs_join_mount_options(options, "soft,intr");
+
 	journal.beginTest(testName, "export read-write to " + clientName)
 	nfs_write_exports(server, exports_data % clientName)
-	nfs_verify_readwrite("dir1", None, 0, 0);
+	nfs_verify_readwrite("dir1", options, 0, 0);
 
 	# And now the other way around
 	exports_data = '''
@@ -793,7 +795,7 @@ def nfs_verify_exports_matching(testName, client, clientName):
 
 	journal.beginTest(testName + "-rev", "export read-only to " + clientName)
 	nfs_write_exports(server, exports_data % clientName)
-	nfs_verify_readonly("dir1", None)
+	nfs_verify_readonly("dir1", options)
 
 def __nfs_ipv4_prefix(ipaddr, pfxlen):
 	if pfxlen == 8:
@@ -1063,7 +1065,7 @@ def nfs_test_exports():
 	# We run the NFSV4 tests last - hopefully we will be past the grace period then.
 	# If not, we're prepared to wait for the remainder of the grace period to expire
 	for version in [2, 3, 4]:
-		journal.beginGroup("export-nfsv%d" % version)
+		journal.beginGroup("export-nfsv%d-basic" % version)
 
 		nfs_write_verify_exports(server, exports_data)
 
@@ -1087,30 +1089,30 @@ def nfs_test_exports():
 		journal.beginTest("test read-write exports with root squashing and uid override")
 		nfs_verify_readwrite("dir4", options, 60000, 65534);
 
-	# FIXME: we should do this export matching for both NFSv4 and NFSv3,
-	# because they use two very different code paths (one going through
-	# mountd, the other being authenticated by the kernel directly).
+		# We run export matching tests for both NFSv4 and NFSv3,
+		# because they use two very different code paths (one going through
+		# mountd, the other being authenticated by the kernel directly).
 
-	journal.beginGroup("export-matching")
+		journal.beginGroup("export-nfsv%d-matching" % version)
 
-	##################################################################
-	# Test IP prefix matching
-	##################################################################
-	nfs_verify_exports_matching("match-ipaddr", client1, client1.ipaddr)
-	nfs_verify_exports_matching("match-ip-prefix8", client1, __nfs_ipv4_prefix(client1.ipaddr, 8))
-	nfs_verify_exports_matching("match-ip-prefix16", client1, __nfs_ipv4_prefix(client1.ipaddr, 16))
-	nfs_verify_exports_matching("match-ip-prefix24", client1, __nfs_ipv4_prefix(client1.ipaddr, 24))
-	nfs_verify_exports_matching("match-ip-prefix32", client1, __nfs_ipv4_prefix(client1.ipaddr, 32))
-	nfs_verify_exports_matching("match-ip-netmask8", client1, __nfs_ipv4_netmask(client1.ipaddr, 8))
-	nfs_verify_exports_matching("match-ip-netmask16", client1, __nfs_ipv4_netmask(client1.ipaddr, 16))
-	nfs_verify_exports_matching("match-ip-netmask24", client1, __nfs_ipv4_netmask(client1.ipaddr, 24))
-	nfs_verify_exports_matching("match-ip-netmask32", client1, __nfs_ipv4_netmask(client1.ipaddr, 32))
+		##################################################################
+		# Test IP prefix matching
+		##################################################################
+		nfs_verify_exports_matching("match-ipaddr", client1, client1.ipaddr, options)
+		nfs_verify_exports_matching("match-ip-prefix8", client1, __nfs_ipv4_prefix(client1.ipaddr, 8), options)
+		nfs_verify_exports_matching("match-ip-prefix16", client1, __nfs_ipv4_prefix(client1.ipaddr, 16), options)
+		nfs_verify_exports_matching("match-ip-prefix24", client1, __nfs_ipv4_prefix(client1.ipaddr, 24), options)
+		nfs_verify_exports_matching("match-ip-prefix32", client1, __nfs_ipv4_prefix(client1.ipaddr, 32), options)
+		nfs_verify_exports_matching("match-ip-netmask8", client1, __nfs_ipv4_netmask(client1.ipaddr, 8), options)
+		nfs_verify_exports_matching("match-ip-netmask16", client1, __nfs_ipv4_netmask(client1.ipaddr, 16), options)
+		nfs_verify_exports_matching("match-ip-netmask24", client1, __nfs_ipv4_netmask(client1.ipaddr, 24), options)
+		nfs_verify_exports_matching("match-ip-netmask32", client1, __nfs_ipv4_netmask(client1.ipaddr, 32), options)
 
-	##################################################################
-	# Test hostname matching
-	##################################################################
-	nfs_verify_exports_matching("match-fqdn", client1, "client1.testing.opensuse.org")
-	nfs_verify_exports_matching("match-domain", client1, "*.testing.opensuse.org")
+		##################################################################
+		# Test hostname matching
+		##################################################################
+		nfs_verify_exports_matching("match-fqdn", client1, "client1.testing.opensuse.org", options)
+		nfs_verify_exports_matching("match-domain", client1, "*.testing.opensuse.org", options)
 
 
 ##################################################################
