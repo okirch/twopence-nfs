@@ -724,7 +724,19 @@ def __nfs_verify_readwrite(client, filename, verifyuid, verifygid):
 			journal.failure("file should have been created with uid %u but has uid %u" % (verifyuid, uid))
 			return False
 
-	# FIXME: verify gid
+	if verifygid >= 0:
+		st = client.run("/bin/stat -c %g " + filename, suppressOutput = True)
+		if not st:
+			journal.failure("Unable to stat created file")
+			return False
+
+		try:
+			gid = int(st.stdout)
+		except:
+			gid = -1
+		if gid != verifygid:
+			journal.failure("file should have been created with gid %u but has gid %u" % (verifygid, gid))
+			return False
 
 	# We check how long this took, because a misconfigured/broken NFSv4 idmapping
 	# may cause significant delays on the first access.
