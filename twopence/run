@@ -374,6 +374,23 @@ def nfs_write_exports(server, exports):
 	journal.info("Flush kernel export cache")
 	server.run("exportfs -f")
 
+	# Busy-wait until the kernel exports cache has been flushed
+	for repeat in range(0, 5):
+		status = server.run("wc -l < /proc/fs/nfsd/exports")
+		if not status:
+			break
+		if str(status.stdout).strip() == "2":
+			break
+
+		journal.warning("/proc/fs/nfsd/exports contains garbage after exportfs -f")
+
+		import time
+		time.sleep(1)
+
+		if repeat > 2:
+			journal.warning("Trying to flush cache once more")
+			server.run("exportfs -f")
+
 	nfs_show_userland_exports()
 	nfs_show_kernel_exports()
 	return True
