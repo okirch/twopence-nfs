@@ -60,9 +60,10 @@ def init_server(node):
 
 	nfs_init_common(node)
 
+	for index in [1, 2, 3, 4]:
+		create_filesystem(node, index)
+
 	journal.beginTest("enable nfsd and rpcbind on server")
-	node.runOrFail("/bin/rm -rf /srv/nfs/dir{1,2,3,4}")
-	node.runOrFail("/bin/mkdir -p -m 777 /srv/nfs/dir{1,2,3,4}")
 
 	node.lastNFSRestart = 0
 
@@ -94,6 +95,81 @@ def init_server(node):
 			journal.failure("Oops, NFSv2 still disabled - expect quite a few failures")
 
 	journal.finishGroup()
+
+def create_filesystem(node, index, fstype = 'btrfs'):
+	image_name = "/var/tmp/disk%u" % index
+	mount_point = "/srv/nfs/dir%u" % index
+
+	journal.beginTest("Setting up file system %s" % mount_point)
+
+	# When we run this script locally, we may have to
+	# clean up from an earlier run. In slenkins, where
+	# we're running on a fresh image every time, this is a NOP
+	if node.run("test -f " + image_name):
+		journal.info("Image %s exist. Cleaning up from previous run" % image_name)
+		loopdev = loopdev_for_image(node, image_name)
+		if loopdev:
+			journal.info("Try to unmount and detach %s" % loopdev)
+			node.run("umount " + loopdev)
+			node.run("losetup -d " + loopdev)
+
+		loopdev = loopdev_for_image(node, image_name)
+		if loopdev:
+			journal.fatal("Unable to detach loop device for image " + image_name)
+
+		node.run("rm -f " + image_name)
+		journal.info("Image %s cleaned up." % image_name)
+
+	if not node.run("dd if=/dev/zero bs=1k seek=1023k count=1k of=%s" % image_name):
+		journal.fatal("Unable to create image %s" % image_name)
+	
+	loopdev = loopdev_attach(node, image_name)
+
+	journal.info("Creating file system on image %s" % image_name)
+	if not node.run("mkfs -t %s %s" % (fstype, loopdev)):
+		journal.fatal("Unable to create file system");
+
+	journal.info("Mounting image %s on %s" % (image_name, mount_point))
+	if not node.run("mkdir -p %s" % mount_point):
+		journal.fatal("Unable to create mount point %s" % mount_point)
+
+	if not node.run("mount %s %s" % (loopdev, mount_point)):
+		journal.fatal("Unable to mount %s" % image_name)
+
+	journal.success("File system %s is ready for service" % mount_point)
+
+def loopdev_for_image(node, image_name):
+
+	dev = None
+
+	journal.info("Check if image %s is attached to a loop device" % image_name)
+	status = node.run("losetup -j " + image_name)
+	if status and status.stdout:
+		dev = str(status.stdout).split(':')[0]
+	if dev:
+		journal.info("Image %s is attached to %s" % (image_name, dev))
+	
+	return dev
+
+def loopdev_attach(node, image_name):
+
+	dev = None
+
+	journal.info("Trying to get next free loop device");
+	status = node.run("losetup -f")
+	if status and status.stdout:
+		dev = str(status.stdout).strip()
+	
+	if not dev:
+		journal.fatal("Unable to get a free loop device")
+	
+	journal.info("Next free loop device is %s" % dev)
+
+	journal.info("Attaching image %s to %s" % (image_name, dev))
+	if not node.run("losetup %s %s" % (dev, image_name)):
+		journal.fatal("Failed to set up loop device")
+	
+	return dev
 
 ##################################################################
 # Restart the NFS server.
@@ -722,8 +798,8 @@ def nfs_test_largefile(client, dir):
 	# Open a file with O_CREAT.
 	journal.beginTest("large file");
 	journal.info("Create file and write 16K bytes at offset 4GB, then verify the data")
-	if nfstool_run(client1, "create-file -c 16K -o 4G" + tf) and \
-	   nfstool_run(client1, "verify-file -o 4G" + tf):
+	if nfstool_run(client1, "create-file -c 16K -o 4G " + tf) and \
+	   nfstool_run(client1, "verify-file -o 4G " + tf):
 		journal.success()
 
 	client1.runOrFail("/bin/rm -f " + tf)
