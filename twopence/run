@@ -136,6 +136,8 @@ def create_filesystem(node, index, fstype = 'btrfs'):
 	if not node.run("mount %s %s" % (loopdev, mount_point)):
 		journal.fatal("Unable to mount %s" % image_name)
 
+	node.run("chmod 777 %s" % mount_point)
+
 	journal.success("File system %s is ready for service" % mount_point)
 
 def loopdev_for_image(node, image_name):
