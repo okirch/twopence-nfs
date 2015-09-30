@@ -253,7 +253,7 @@ def init_client(node):
 		return False
 
 	mtab = __nfs_mtab_get(node)
-	for dir in ["dir1", "dir2", "dir3", "dir4"]:
+	for dir in ["dir1", "dir2", "dir3", "dir4"] + dir2fstype.keys():
 		clientdir = __nfs_client_file(dir);
 		if __nfs_mtab_find_mountpoint(mtab, clientdir):
 			journal.info("Unmounting dir left mounted from previous test run")
