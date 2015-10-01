@@ -1266,14 +1266,14 @@ out:	if (res)
 }
 
 /*
- * nfs mmap validation
+ * nfs IO coherence testing
  *
  * This needs more work, especially for the multi-client scenario where we wish to
  * verify data consistency.
  */
-#define MMAP2_LOCK_DELAY_MAX	100
+#define COHIO_LOCK_DELAY_MAX	100
 
-struct mmap2_file {
+struct io_file {
 	int			fd;
 
 	unsigned int		record_size;
@@ -1284,31 +1284,29 @@ struct mmap2_file {
 	int			sync;
 
 	unsigned int		num_locks_acquired;
-	unsigned int		lock_delays[MMAP2_LOCK_DELAY_MAX+1];
+	double			lock_delay_granularity;
+	unsigned int		lock_delays[COHIO_LOCK_DELAY_MAX+1];
 
-	struct mmap2_record *	(*read)(struct mmap2_file *, unsigned int slot);
-	int			(*write)(struct mmap2_file *, unsigned int slot, struct mmap2_record *);
+	struct io_record *	(*read)(struct io_file *, unsigned int slot);
+	int			(*write)(struct io_file *, unsigned int slot, struct io_record *);
 };
 
-struct mmap2_record {
+struct io_record {
 	uint32_t	challenge;
 	uint32_t	response;
 };
 
-static int			mmap2_timeout = 0;
-static const double		mmap2_time_granularity = 0.1;
-
 static inline unsigned int
-mmap2_lock_delay_ms(unsigned int index)
+io_lock_delay_ms(struct io_file *mf, unsigned int index)
 {
-	return 1000 * index * mmap2_time_granularity;
+	return 1000 * index * mf->lock_delay_granularity;
 }
 
 static int
-__mmap2_lock_record(struct mmap2_file *mf, unsigned int slot, int type)
+__io_lock_record(struct io_file *mf, unsigned int slot, int type)
 {
 	struct timeval t0, t1, delta;
-	unsigned int elapsed;
+	double elapsed;
 	struct flock fl;
 
 	// printf("About to %slock slot %u\n", (type == F_UNLCK)? "un" : "", slot);
@@ -1324,17 +1322,19 @@ __mmap2_lock_record(struct mmap2_file *mf, unsigned int slot, int type)
 	}
 	gettimeofday(&t1, NULL);
 	timersub(&t1, &t0, &delta);
-	elapsed = (delta.tv_sec + delta.tv_usec * 1e-6) / mmap2_time_granularity;
+	elapsed = delta.tv_sec + delta.tv_usec * 1e-6;
 
-	if (elapsed > 5 / mmap2_time_granularity)
+	if (elapsed > 5)
 		fprintf(stderr, "\nWarning: long delay in %s the lock (%f seconds)\n",
 				(type == F_UNLCK)? "releasing" : "acquiring",
-				elapsed / mmap2_time_granularity);
+				elapsed);
 
 	if (type != F_UNLCK) {
-		if (elapsed >= MMAP2_LOCK_DELAY_MAX)
-			elapsed = MMAP2_LOCK_DELAY_MAX;
-		mf->lock_delays[elapsed]++;
+		unsigned int delay_index = elapsed / mf->lock_delay_granularity;
+
+		if (delay_index >= COHIO_LOCK_DELAY_MAX)
+			delay_index = COHIO_LOCK_DELAY_MAX;
+		mf->lock_delays[delay_index]++;
 		mf->num_locks_acquired++;
 	}
 
@@ -1342,13 +1342,13 @@ __mmap2_lock_record(struct mmap2_file *mf, unsigned int slot, int type)
 }
 
 static int
-mmap2_lock_record(struct mmap2_file *mf, unsigned int slot)
+io_lock_record(struct io_file *mf, unsigned int slot)
 {
-	return __mmap2_lock_record(mf, slot, F_WRLCK);
+	return __io_lock_record(mf, slot, F_WRLCK);
 }
 
 static int
-mmap2_is_record_locked(struct mmap2_file *mf, unsigned int slot)
+io_is_record_locked(struct io_file *mf, unsigned int slot)
 {
 	struct flock fl;
 
@@ -1365,18 +1365,18 @@ mmap2_is_record_locked(struct mmap2_file *mf, unsigned int slot)
 }
 
 static int
-mmap2_unlock_record(struct mmap2_file *mf, unsigned int slot)
+io_unlock_record(struct io_file *mf, unsigned int slot)
 {
-	return __mmap2_lock_record(mf, slot, F_UNLCK);
+	return __io_lock_record(mf, slot, F_UNLCK);
 }
 
 /*
  * mmap case: quite easy
  */
-static struct mmap2_record *
-mmap2_read_mapped(struct mmap2_file *mf, unsigned int slot)
+static struct io_record *
+iofile_read_mapped(struct io_file *mf, unsigned int slot)
 {
-	struct mmap2_record *record = (struct mmap2_record *) (mf->mapped + slot * mf->record_size);
+	struct io_record *record = (struct io_record *) (mf->mapped + slot * mf->record_size);
 
 	/* Not sure if this helps - but without any help from the application, the
 	 * kernel doesn't revalidate pages after obtaining the lock */
@@ -1388,7 +1388,7 @@ mmap2_read_mapped(struct mmap2_file *mf, unsigned int slot)
 }
 
 static int
-mmap2_write_mapped(struct mmap2_file *mf, unsigned int slot, struct mmap2_record *record)
+iofile_write_mapped(struct io_file *mf, unsigned int slot, struct io_record *record)
 {
 	/* In the sync case, call msync(), otherwise this is a no-op */
 	if (mf->sync && msync(record, mf->record_size, MS_SYNC | MS_INVALIDATE) < 0) {
@@ -1399,7 +1399,7 @@ mmap2_write_mapped(struct mmap2_file *mf, unsigned int slot, struct mmap2_record
 }
 
 static int
-mmap2_open_mapped(struct mmap2_file *mf, const char *pathname, int explicit_sync, unsigned int nslots)
+iofile_open_mapped(struct io_file *mf, const char *pathname, int explicit_sync, unsigned int nslots)
 {
 	struct stat stb;
 
@@ -1438,16 +1438,16 @@ mmap2_open_mapped(struct mmap2_file *mf, const char *pathname, int explicit_sync
 		return -1;
 	}
 
-	mf->read = mmap2_read_mapped;
-	mf->write = mmap2_write_mapped;
+	mf->read = iofile_read_mapped;
+	mf->write = iofile_write_mapped;
 
 	return 0;
 }
 
-static struct mmap2_record *
-mmap2_read_stdio(struct mmap2_file *mf, unsigned int slot)
+static struct io_record *
+iofile_read_stdio(struct io_file *mf, unsigned int slot)
 {
-	static struct mmap2_record buffer;
+	static struct io_record buffer;
 	int n;
 
 	if (lseek(mf->fd, slot * mf->record_size, SEEK_SET) < 0) {
@@ -1469,7 +1469,7 @@ mmap2_read_stdio(struct mmap2_file *mf, unsigned int slot)
 }
 
 static int
-mmap2_write_stdio(struct mmap2_file *mf, unsigned int slot, struct mmap2_record *record)
+iofile_write_stdio(struct io_file *mf, unsigned int slot, struct io_record *record)
 {
 	int n;
 
@@ -1497,7 +1497,7 @@ mmap2_write_stdio(struct mmap2_file *mf, unsigned int slot, struct mmap2_record 
 }
 
 static int
-mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int oflags, int explicit_sync, unsigned int nslots)
+iofile_open_stdio(struct io_file *mf, const char *pathname, int oflags, int explicit_sync, unsigned int nslots)
 {
 	struct stat stb;
 
@@ -1531,40 +1531,45 @@ mmap2_open_stdio(struct mmap2_file *mf, const char *pathname, int oflags, int ex
 		mf->nslots = mf->size / mf->record_size;
 	}
 
-	mf->read = mmap2_read_stdio;
-	mf->write = mmap2_write_stdio;
+	mf->read = iofile_read_stdio;
+	mf->write = iofile_write_stdio;
 
 	return 0;
 }
 
 static int
-__mmap2_open(struct mmap2_file *mf, const char *mode, const char *name, unsigned int nslots)
+__iofile_open(struct io_file *mf, const char *mode, const char *name, unsigned int nslots)
 {
 	mf->fd = -1;
+
+	/* We record the distribution of delays encountered while locking
+	 * a file. For now, the granularity is 0.1 seconds
+	 */
+	mf->lock_delay_granularity = 0.1;
 
 	/* For now, we always make records page aligned. This allows us to use
 	 * different access modes for challenger and responder */
 	mf->record_size = getpagesize();
 
 	if (!strcmp(mode, "stdio"))
-		return mmap2_open_stdio(mf, name, 0, 0, nslots);
+		return iofile_open_stdio(mf, name, 0, 0, nslots);
 	if (!strcmp(mode, "stdio-sync"))
-		return mmap2_open_stdio(mf, name, 0, 1, nslots);
+		return iofile_open_stdio(mf, name, 0, 1, nslots);
 	if (!strcmp(mode, "stdio-osync"))
-		return mmap2_open_stdio(mf, name, O_SYNC, 0, nslots);
+		return iofile_open_stdio(mf, name, O_SYNC, 0, nslots);
 	if (!strcmp(mode, "stdio-odirect"))
-		return mmap2_open_stdio(mf, name, O_DIRECT, 0, nslots);
+		return iofile_open_stdio(mf, name, O_DIRECT, 0, nslots);
 	if (!strcmp(mode, "mmap"))
-		return mmap2_open_mapped(mf, name, 0, nslots);
+		return iofile_open_mapped(mf, name, 0, nslots);
 	if (!strcmp(mode, "mmap-sync"))
-		return mmap2_open_mapped(mf, name, 1, nslots);
+		return iofile_open_mapped(mf, name, 1, nslots);
 
 	fprintf(stderr, "Unknown file access mode \"%s\"\n", mode);
 	return -1;
 }
 
 static void
-__mmap2_close(struct mmap2_file *mf)
+__iofile_close(struct io_file *mf)
 {
 	if (mf->mapped) {
 		munmap(mf->mapped, mf->size);
@@ -1577,33 +1582,35 @@ __mmap2_close(struct mmap2_file *mf)
 }
 
 void
-mmap2_close(struct mmap2_file *mf)
+iofile_close(struct io_file *mf)
 {
 	if (mf == NULL)
 		return;
-	__mmap2_close(mf);
+	__iofile_close(mf);
 	free(mf);
 }
 
-static struct mmap2_file *
-mmap2_open(const char *mode, const char *name, unsigned int nslots)
+static struct io_file *
+iofile_open(const char *mode, const char *name, unsigned int nslots)
 {
-	struct mmap2_file *mf;
+	struct io_file *mf;
 
 	mf = calloc(1, sizeof(*mf));
-	if (__mmap2_open(mf, mode, name, nslots) < 0) {
-		mmap2_close(mf);
+	if (__iofile_open(mf, mode, name, nslots) < 0) {
+		iofile_close(mf);
 		return NULL;
 	}
 
 	return mf;
 }
 
+static int nfslock_timeout = 0;
+
 static void
-__mmap2_timeout_handler(int sig)
+__nfslock_timeout_handler(int sig)
 {
 	write(2, "\nTimeout.\n", 10);
-	mmap2_timeout = 1;
+	nfslock_timeout = 1;
 }
 
 /*
@@ -1658,7 +1665,7 @@ nfslock_coherence(int argc, char **argv)
 	int		opt_wait_ms = 100;
 	int		opt_delay_report = 0;
 	int		c, res = 1;
-	struct mmap2_file *mf;
+	struct io_file *mf;
 	char		*name;
 
 	while ((c = getopt(argc, argv, "c:di:M:rt:w:")) != -1) {
@@ -1712,7 +1719,7 @@ nfslock_coherence(int argc, char **argv)
 	if (opt_mode == NULL)
 		opt_mode = "stdio";
 
-	mf = mmap2_open(opt_mode, name, opt_count);
+	mf = iofile_open(opt_mode, name, opt_count);
 	if (mf == NULL)
 		goto out;
 
@@ -1722,7 +1729,7 @@ nfslock_coherence(int argc, char **argv)
 		memset(&act, 0, sizeof(act));
 		/* Do *not* set sa_flags to SA_RESTART - we specifically do not want
 		 * SETLK attempts to restart on timeout */
-		act.sa_handler = __mmap2_timeout_handler;
+		act.sa_handler = __nfslock_timeout_handler;
 		sigaction(SIGALRM, &act, NULL);
 		alarm(opt_timeout);
 	}
@@ -1740,12 +1747,12 @@ nfslock_coherence(int argc, char **argv)
 		 *    - make next slot the current one
 		 */
 
-		if (mmap2_lock_record(mf, index) < 0)
+		if (io_lock_record(mf, index) < 0)
 			goto out;
 		while (opt_iterations--) {
-			struct mmap2_record *current;
+			struct io_record *current;
 
-			if (mmap2_timeout)
+			if (nfslock_timeout)
 				goto out;
 
 			if (!(current = mf->read(mf, index)))
@@ -1760,15 +1767,15 @@ nfslock_coherence(int argc, char **argv)
 			write(2, "o", 1);
 
 			next = (index + 1) % mf->nslots;
-			if (mmap2_lock_record(mf, next) < 0)
+			if (io_lock_record(mf, next) < 0)
 				goto out;
 
 			/* Unlocking should flush out all changes */
-			mmap2_unlock_record(mf, index);
+			io_unlock_record(mf, index);
 			index = next;
 		}
 
-		mmap2_unlock_record(mf, index);
+		io_unlock_record(mf, index);
 	} else {
 		unsigned int index = 1, prev = 0, next;
 
@@ -1785,13 +1792,13 @@ nfslock_coherence(int argc, char **argv)
 		 */
 		printf("Locking record 1 and waiting for challenger: ");
 		fflush(stdout);
-		if (mmap2_lock_record(mf, index) < 0)
+		if (io_lock_record(mf, index) < 0)
 			goto out;
 
-		while (prev == 0 && !mmap2_is_record_locked(mf, prev)) {
+		while (prev == 0 && !io_is_record_locked(mf, prev)) {
 			write(2, ".", 1);
 			if (usleep(100000) < 0) {
-				if (mmap2_timeout)
+				if (nfslock_timeout)
 					goto out;
 				perror("usleep");
 				goto out;
@@ -1800,9 +1807,9 @@ nfslock_coherence(int argc, char **argv)
 		printf(" ready!\n");
 
 		while (opt_iterations--) {
-			struct mmap2_record *current;
+			struct io_record *current;
 
-			if (mmap2_timeout)
+			if (nfslock_timeout)
 				goto out;
 
 			if (!(current = mf->read(mf, index)))
@@ -1834,10 +1841,10 @@ nfslock_coherence(int argc, char **argv)
 			 *     to claim the lock
 			 */
 			next = (index + 1) % mf->nslots;
-			if (mmap2_lock_record(mf, next) < 0)
+			if (io_lock_record(mf, next) < 0)
 				goto out;
 
-			mmap2_unlock_record(mf, index);
+			io_unlock_record(mf, index);
 
 			prev = index;
 			index = next;
@@ -1849,39 +1856,39 @@ nfslock_coherence(int argc, char **argv)
 out:	
 	write(2, "\n", 1);
 
-	if (mmap2_timeout)
+	if (nfslock_timeout)
 		printf("Timed out\n");
 
 	if (opt_delay_report && mf && mf->num_locks_acquired) {
 		printf("%u locks acquired.\n", mf->num_locks_acquired);
 		if (mf->lock_delays[0] == mf->num_locks_acquired) {
-			printf("All locks took less than %ums second to acquire\n", mmap2_lock_delay_ms(1));
+			printf("All locks took less than %ums to acquire\n", io_lock_delay_ms(mf, 1));
 		} else {
 			unsigned int i, count;
 
 			printf("Distribution of lock delays:\n");
-			for (i = 0; i < MMAP2_LOCK_DELAY_MAX; ++i) {
+			for (i = 0; i < COHIO_LOCK_DELAY_MAX; ++i) {
 				count = mf->lock_delays[i];
 				if (count != 0) {
 					printf("  %4u .. %4ums: %4u (%2u%%)\n",
-							mmap2_lock_delay_ms(i),
-							mmap2_lock_delay_ms(i + 1),
+							io_lock_delay_ms(mf, i),
+							io_lock_delay_ms(mf, i + 1),
 							count,
 							100 * count / mf->num_locks_acquired);
 				}
 			}
 
-			count = mf->lock_delays[MMAP2_LOCK_DELAY_MAX];
+			count = mf->lock_delays[COHIO_LOCK_DELAY_MAX];
 			if (count) {
 				printf("  greater %4ums: %4u (%2u%%)\n",
-						mmap2_lock_delay_ms(MMAP2_LOCK_DELAY_MAX),
+						io_lock_delay_ms(mf, COHIO_LOCK_DELAY_MAX),
 						count,
 						100 * count / mf->num_locks_acquired);
 			}
 		}
 	}
 
-	mmap2_close(mf);
+	iofile_close(mf);
 	return res;
 }
 
