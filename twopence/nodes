@@ -8,3 +8,4 @@ install 	twopence-nfs-client
 
 node    	server
 install 	nfs-kernel-server
+install         xfsprogs
