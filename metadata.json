@@ -1,0 +1,16 @@
+{
+  "name": "twopence-nfs",
+  "summary": "Test suite for NFS",
+  "description": "SLEnkins test suite for NFS network file system.",
+  "status": "ready",
+  "maintainer": ["Olaf Kirch <okirch@suse.com>"],
+  "rpm": ["twopence-nfs", "twopence-nfs-control"],
+  "arch": ["noarch"],
+  "product": "nfs",
+  "fate": null,
+  "bnc": ["bsc#981309"],
+  "updated_at": "2016-04-27 15:58:00 UTC",
+  "tags": ["slenkins"],
+  "nodes": ["client1", "client2", "server"],
+  "incompatible": []
+}
