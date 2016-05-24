@@ -8,7 +8,7 @@
   "arch": ["noarch"],
   "product": "nfs",
   "fate": null,
-  "bnc": ["bsc#981309"],
+  "bnc": null,
   "updated_at": "2016-04-27 15:58:00 UTC",
   "tags": ["slenkins"],
   "nodes": ["client1", "client2", "server"],
