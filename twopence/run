@@ -1748,3 +1748,6 @@ except:
 	journal.info(traceback.format_exc(None))
 
 journal.writeReport()
+if (journal.num_failed() + journal.num_errors()):
+	sys.exit(1)
+sys.exit(0)
