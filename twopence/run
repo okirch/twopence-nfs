@@ -2,9 +2,8 @@
 #
 # Test program to verify that NFS client and server function properly
 #
-# Copyright (C) 2015 Olaf Kirch <okir@suse.de>
+# Copyright (C) 2015-16 Olaf Kirch <okir@suse.de>
 #
-
 import sys
 import suselog
 import twopence
@@ -216,9 +215,9 @@ def nfs_server_control(node, action):
 		node.lastNFSRestart = time.time();
 
 	if has_systemd(node):
-		node.run("systemctl %s nfs-server.service" % action)
+		node.runOrFail("systemctl %s nfsserver.service" % action)
 	else:
-		node.run("rcnfsserver " + action)
+		node.runOrFail("rcnfsserver " + action)
 
 def nfs_server_wait_grace(node, grace_period = 90):
 	import time
@@ -355,7 +354,7 @@ def nfs_show_kernel_exports():
 # the exports file, and use exportfs to provide the reader with
 # hints of what acutally *did* get exported.
 ##################################################################
-def nfs_write_exports(server, exports):
+def nfs_write_exports(server, exports, reload_nfs = True):
 	journal.info("%s: updating exports file:" % server.name)
 	for l in exports.splitlines():
 		if l:
@@ -366,9 +365,13 @@ def nfs_write_exports(server, exports):
 		journal.failure("unable to upload exports file")
 		return False
 
-	if nfs_server_control(server, "reload"):
-		return False
-
+	if (reload_nfs):
+		if nfs_server_control(server, "reload"):
+			return False
+	else:
+		journal.info("--- skipping reload of nfs configuration ---")
+		journal.success("export file updated")
+		return True
 	# We need to flush the kernel's export cache explicitly.
 	# The nfs init script will not do this for us automatically.
 	journal.info("Flush kernel export cache")
@@ -878,7 +881,7 @@ def nfs_test_writefile(client, dir):
 	tf = dir + "/testfile";
 
 	journal.beginTest("write to file")
-	if not client.run("/bin/dd if=/dev/zero of=%s bs=1k count=4k" % tf):
+	if not client.run("/bin/dd if=/dev/zero of=%s bs=1k count=4k" % tf, timeout=120):
 		journal.failure("Failed to write to file")
 
 	client1.runOrFail("/bin/rm -f " + tf)
@@ -1133,7 +1136,7 @@ def nfs_test_sysvinit():
 	running = False
 
 	journal.beginTest("setup: write simple exports file to server")
-	if not nfs_write_exports(server, my_exports):
+	if not nfs_write_exports(server, my_exports, reload_nfs=False):
 		journal.failure("Unable to initialize sysvinit tests")
 		return False
 
@@ -1148,7 +1151,6 @@ def nfs_test_sysvinit():
 		journal.failure("that didn't work, it seems")
 	else:
 		running = True
-
 	journal.beginTest("Check status of running NFS server")
 	st = server.run("rcnfsserver status")
 	if st.code != 0:
@@ -1747,7 +1749,4 @@ except:
 	journal.error("Oops, caught unexpected exception")
 	journal.info(traceback.format_exc(None))
 
-journal.writeReport()
-if (journal.num_failed() + journal.num_errors()):
-	sys.exit(1)
-sys.exit(0)
+susetest.finish(journal)
