@@ -1,6 +1,10 @@
 
 - Test NFS with Kerberos
-- Test NFSv4 id mapping
-- Test NFSv4 ACLs
+
+- Test NFSv4 id mapping { dmaiocchi }
+- Test NFSv4 ACLs { dmaiocchi }
+
+- dump/check_log after suite has finished. ( maybe this can be done in a deconstructor of susetest) {dmaiocchi}
+  -> example: if we detect journalctl -p1/p2 or kernel warning, deconstructor at end of suite will check the failure and report this as failure.
 
 - Test intr and soft behavior

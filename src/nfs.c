@@ -1289,6 +1289,7 @@ struct io_file {
 
 	struct io_record *	(*read)(struct io_file *, unsigned int slot);
 	int			(*write)(struct io_file *, unsigned int slot, struct io_record *);
+        void			(*refresh)(struct io_file *);
 };
 
 struct io_record {
@@ -1336,6 +1337,8 @@ __io_lock_record(struct io_file *mf, unsigned int slot, int type)
 			delay_index = COHIO_LOCK_DELAY_MAX;
 		mf->lock_delays[delay_index]++;
 		mf->num_locks_acquired++;
+		if (mf->refresh)
+			mf->refresh(mf);
 	}
 
 	return 0;
@@ -1398,6 +1401,13 @@ iofile_write_mapped(struct io_file *mf, unsigned int slot, struct io_record *rec
 	return 0;
 }
 
+static void
+iofile_refresh_mapped(struct io_file *mf)
+{
+	munmap(mf->mapped, mf->size);
+	mmap(mf->mapped, mf->size, PROT_WRITE|PROT_READ, MAP_SHARED|MAP_FIXED, mf->fd, 0);
+}
+
 static int
 iofile_open_mapped(struct io_file *mf, const char *pathname, int explicit_sync, unsigned int nslots)
 {
@@ -1440,7 +1450,7 @@ iofile_open_mapped(struct io_file *mf, const char *pathname, int explicit_sync, 
 
 	mf->read = iofile_read_mapped;
 	mf->write = iofile_write_mapped;
-
+	mf->refresh = iofile_refresh_mapped;
 	return 0;
 }
 
