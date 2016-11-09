@@ -5,11 +5,11 @@
   "status": "ready",
   "maintainer": ["Olaf Kirch <okirch@suse.com>"],
   "rpm": ["twopence-nfs", "twopence-nfs-control"],
-  "arch": ["noarch"],
+  "arch": ["aarch64", "i586", "ppc64le", "s390x", "x86_64"],
   "product": "nfs",
   "fate": null,
   "bnc": ["bsc#981309"],
-  "updated_at": "2016-04-27 15:58:00 UTC",
+  "updated_at": "2016-06-01 14:38:01 UTC",
   "tags": ["slenkins"],
   "nodes": ["client1", "client2", "server"],
   "incompatible": []
